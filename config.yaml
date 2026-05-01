@@ -11,7 +11,7 @@ data:
   ligand_distance_cutoff: 4.5        # Å — residue within this distance of ligand = binding site
 
 model:
-  input_dim: 26                       # 20 AA one-hot + 3 SS one-hot + hydrophobicity + charge + rel_pos
+  input_dim: 23                       # 20 AA one-hot + 3 SS one-hot (26 after dataset reprocess with new graph_construction.py)
   hidden_dim: 256                     # increased from 128 for richer representations
   num_gcn_layers: 4
   num_heads: 8                        # cross-attention heads
