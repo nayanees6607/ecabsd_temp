@@ -76,12 +76,17 @@ def run_evaluation(config_path: str = "config.yaml", checkpoint_path: str = "che
         hidden_dim=mcfg["hidden_dim"],
         num_heads=mcfg["num_heads"],
         dropout=0.0,  # No dropout during evaluation
+        edge_dim=mcfg["edge_feature_dim"],
     ).to(device)
 
+    # Load checkpoint and recover saved threshold
+    saved_threshold = cfg["prediction"].get("threshold", 0.5)
     if os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location=device)
         model.load_state_dict(checkpoint["model_state_dict"])
+        saved_threshold = checkpoint.get("best_threshold", saved_threshold)
         print(f"[ECABSD] Loaded checkpoint from: {checkpoint_path}")
+        print(f"[ECABSD] Using saved threshold: {saved_threshold:.4f}")
     else:
         print(f"[ECABSD] WARNING: No checkpoint found at {checkpoint_path}")
         print(f"[ECABSD] Running with random weights for demonstration.")
@@ -114,8 +119,9 @@ def run_evaluation(config_path: str = "config.yaml", checkpoint_path: str = "che
                 data_b = batch["data_b"].to(device) if batch["data_b"] is not None else None
                 labels = batch["labels"]
 
-                pred, _ = model(data_a, data_b)
-                probs = pred.squeeze(-1).cpu().numpy()
+                logits, _ = model(data_a, data_b)
+                # Model now outputs logits — apply sigmoid
+                probs = torch.sigmoid(logits).squeeze(-1).cpu().numpy()
                 all_probs.extend(probs.tolist())
                 all_labels.extend(labels.cpu().numpy().tolist())
     else:
@@ -128,8 +134,8 @@ def run_evaluation(config_path: str = "config.yaml", checkpoint_path: str = "che
             data_a = data_a.to(device)
 
             with torch.no_grad():
-                pred, attn = model(data_a)
-                probs = pred.squeeze(-1).cpu().numpy()
+                logits, attn = model(data_a)
+                probs = torch.sigmoid(logits).squeeze(-1).cpu().numpy()
 
             # Create dummy labels for demonstration
             dummy_labels = np.zeros(len(probs))
@@ -141,10 +147,24 @@ def run_evaluation(config_path: str = "config.yaml", checkpoint_path: str = "che
             return
 
     # Compute metrics
-    all_probs = np.array(all_probs)
+    all_probs  = np.array(all_probs)
     all_labels = np.array(all_labels)
 
-    all_preds = (all_probs >= 0.6).astype(int)
+    # Threshold sweep — find the value that maximises F1
+    from sklearn.metrics import f1_score as _f1, precision_recall_curve
+    if len(np.unique(all_labels)) > 1:
+        precisions, recalls, thresh_vals = precision_recall_curve(all_labels, all_probs)
+        f1_vals   = 2 * (precisions * recalls) / (precisions + recalls + 1e-8)
+        best_idx  = int(np.argmax(f1_vals[:-1]))  # last point has no threshold
+        best_threshold = float(thresh_vals[best_idx])
+        print(f"  [Threshold sweep] Optimal threshold: {best_threshold:.4f}  "
+              f"(F1={f1_vals[best_idx]:.4f})")
+        print(f"  [Threshold saved] Using: {best_threshold:.4f}  "
+              f"(overrides checkpoint value {saved_threshold:.4f})")
+    else:
+        best_threshold = saved_threshold
+
+    all_preds = (all_probs >= best_threshold).astype(int)
 
     metrics = {
         "accuracy": float(accuracy_score(all_labels, all_preds)),

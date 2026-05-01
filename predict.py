@@ -26,7 +26,7 @@ def run_prediction(
     chain_a: str,
     chain_b: str = None,
     checkpoint_path: str = "checkpoints/best_model.pt",
-    threshold: float = 0.6,
+    threshold: float = None,   # if None, loaded from checkpoint
     output_path: str = None,
     config_path: str = "config.yaml",
 ):
@@ -63,14 +63,24 @@ def run_prediction(
         hidden_dim=mcfg["hidden_dim"],
         num_heads=mcfg["num_heads"],
         dropout=0.0,
+        edge_dim=mcfg["edge_feature_dim"],
     ).to(device)
 
+    # Resolve threshold: CLI arg > checkpoint value > config value
+    cfg_threshold = cfg["prediction"].get("threshold", 0.5)
     if os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location=device)
         model.load_state_dict(checkpoint["model_state_dict"])
+        ckpt_threshold = checkpoint.get("best_threshold", cfg_threshold)
         print(f"[ECABSD] Loaded model from: {checkpoint_path}")
+        print(f"[ECABSD] Checkpoint threshold: {ckpt_threshold:.4f}")
     else:
         print(f"[ECABSD] WARNING: No checkpoint at {checkpoint_path}. Using random weights.")
+        ckpt_threshold = cfg_threshold
+
+    if threshold is None:
+        threshold = ckpt_threshold
+        print(f"[ECABSD] Using threshold: {threshold:.4f}")
 
     # Build graphs
     print(f"[ECABSD] Building graph for chain {chain_a}...")
@@ -188,7 +198,8 @@ if __name__ == "__main__":
     parser.add_argument("--chain-a", required=True, help="Target chain ID")
     parser.add_argument("--chain-b", default=None, help="Partner chain ID")
     parser.add_argument("--checkpoint", default="checkpoints/best_model.pt")
-    parser.add_argument("--threshold", type=float, default=0.6)
+    parser.add_argument("--threshold", type=float, default=None,
+                        help="Decision threshold (default: loaded from checkpoint)")
     parser.add_argument("--output", default=None)
     parser.add_argument("--config", default="config.yaml")
     args = parser.parse_args()
