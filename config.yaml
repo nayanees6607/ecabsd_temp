@@ -30,16 +30,16 @@ prediction:
   threshold: 0.5
 training:
   batch_size: 1
-  early_stopping_patience: 20
+  early_stopping_patience: 30
   epochs: 100
-  focal_alpha: 0.75
+  focal_alpha: 0.90
   focal_gamma: 2.0
   gradient_clip: 1.0
   label_smoothing: 0.05
   learning_rate: 0.001
   loss: focal
-  lr_scheduler: plateau
-  lr_patience: 5
+  lr_scheduler: cosine
+  lr_patience: 15
   lr_factor: 0.5
   num_workers: 0
   seed: 42
