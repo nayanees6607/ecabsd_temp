@@ -13,24 +13,27 @@ model:
   input_dim: 33
   num_gcn_layers: 6
   num_heads: 8
+  num_cross_attn_layers: 2
   residue_max: 800
   residue_min: 30
 
 training:
   batch_size: 8
+  dice_weight: 0.4
   early_stopping_patience: 80
   epochs: 200
   focal_alpha: 0.90
   focal_gamma: 2.0
   gradient_clip: 1.0
   label_smoothing: 0.05
-  learning_rate: 0.0005
-  loss: focal
-  lr_scheduler: cosine
+  learning_rate: 0.001
+  loss: combined
   lr_factor: 0.5
   lr_patience: 15
+  lr_scheduler: cosine_warmup
   num_workers: 0
   seed: 42
+  warmup_epochs: 15
   weight_decay: 0.0001
 
 prediction:

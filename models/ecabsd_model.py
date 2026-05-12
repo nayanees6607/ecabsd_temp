@@ -51,10 +51,10 @@ class ECABSDModel(nn.Module):
         num_heads:  int   = 8,
         dropout:    float = 0.2,
         edge_dim:   int   = 5,
+        num_cross_attn_layers: int = 2,
     ):
         super().__init__()
 
-        # Shared GATv2 encoder (weight sharing between chain A and B)
         self.gcn_encoder = GCNEncoder(
             input_dim=input_dim,
             hidden_dim=hidden_dim,
@@ -63,18 +63,17 @@ class ECABSDModel(nn.Module):
             dropout=dropout,
         )
 
-        # Gated FFN refinement
         self.se3_refine = SE3Transformer(
             input_dim=hidden_dim,
             hidden_dim=hidden_dim,
             dropout=dropout,
         )
 
-        # Pre-norm + FFN cross-attention
         self.cross_attention = CrossAttention(
             embed_dim=hidden_dim,
             num_heads=num_heads,
             dropout=dropout,
+            num_layers=num_cross_attn_layers,
         )
 
         # Global context: mean-pool fused repr + project back to hidden_dim
