@@ -175,8 +175,8 @@ def train_one_epoch(model, loader, optimizer, criterion, device, gradient_clip):
 
     for sample in loader:
         data_a  = sample["data_a"].to(device)
-        data_b  = sample["data_b"].to(device) if sample["data_b"] is not None else None
-        labels  = sample["labels"].to(device)
+        data_b  = sample["data_b"].to(device)   # always a Batch now (never None)
+        labels  = sample["labels"].to(device)   # already flat-concatenated by collate_fn
 
         optimizer.zero_grad()
         logits, _ = model(data_a, data_b)
@@ -211,7 +211,7 @@ def validate(model, loader, criterion, device):
 
     for sample in loader:
         data_a  = sample["data_a"].to(device)
-        data_b  = sample["data_b"].to(device) if sample["data_b"] is not None else None
+        data_b  = sample["data_b"].to(device)   # always a Batch now
         labels  = sample["labels"].to(device)
 
         logits, _ = model(data_a, data_b)
