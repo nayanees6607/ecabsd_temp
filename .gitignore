@@ -14,3 +14,10 @@ venv310/
 data/processed/ 
 data/raw/ 
 checkpoints/ 
+checkpoints/best_model.pt 
+.DS_Store
+*.zip
+*.pdb
+data/BM5-clean/
+generate_v1_notebook.py
+test_novel_pdb.py

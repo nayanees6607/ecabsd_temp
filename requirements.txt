@@ -182,8 +182,6 @@ python-json-logger==4.0.0
 python-logstash-async==4.1.0
 python-multipart==0.0.20
 pytz==2025.2
-pywin32==308
-pywinpty==3.0.2
 PyYAML==6.0.3
 pyzmq==26.2.1
 redis==7.1.0
@@ -221,12 +219,12 @@ threadpoolctl==3.6.0
 tinycss2==1.4.0
 tokenizers==0.22.2
 toml==0.10.2
-torch==2.1.0+cpu
-torch-cluster==1.6.3+pt21cpu
+torch==2.1.0
+torch-cluster==1.6.3
 torch-geometric==2.7.0
-torch-scatter==2.1.2+pt21cpu
-torch-sparse==0.6.18+pt21cpu
-torch-spline-conv==1.2.2+pt21cpu
+torch-scatter==2.1.2
+torch-sparse==0.6.18
+torch-spline-conv==1.2.2
 tornado==6.4.2
 tqdm==4.67.3
 traitlets==5.14.3
