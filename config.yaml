@@ -26,14 +26,14 @@ training:
   focal_gamma: 2.0
   gradient_clip: 1.0
   label_smoothing: 0.05
-  learning_rate: 0.001
-  loss: combined
+  learning_rate: 0.0003
+  loss: focal
   lr_factor: 0.5
   lr_patience: 15
   lr_scheduler: cosine_warmup
   num_workers: 0
   seed: 42
-  warmup_epochs: 15
+  warmup_epochs: 20
   weight_decay: 0.0001
 
 prediction:
