@@ -4,49 +4,52 @@ data:
   processed_dir: data/db5_processed
   raw_dir: data/raw
   splits_csv: data/db5_splits.csv
+
+model:
+  dropout: 0.2
+  edge_feature_dim: 5
+  graph_cutoff: 10.0
+  hidden_dim: 512
+  input_dim: 33
+  num_gcn_layers: 6
+  num_heads: 8
+  residue_max: 800
+  residue_min: 30
+
+training:
+  batch_size: 8
+  early_stopping_patience: 40
+  epochs: 200
+  focal_alpha: 0.90
+  focal_gamma: 2.0
+  gradient_clip: 1.0
+  label_smoothing: 0.05
+  learning_rate: 0.0005
+  loss: focal
+  lr_scheduler: cosine
+  lr_factor: 0.5
+  lr_patience: 15
+  num_workers: 0
+  seed: 42
+  weight_decay: 0.0001
+
+prediction:
+  output_format: csv
+  threshold: 0.5
+
+paths:
+  checkpoints_dir: checkpoints
+  logs_dir: logs
+  results_dir: results
+
+web:
+  checkpoint: checkpoints/best_model.pt
+  host: 0.0.0.0
+  port: 8000
+
 docking:
   box_padding: 5.0
   energy_range: 3
   exhaustiveness: 8
   num_modes: 9
   vina_executable: vina
-model:
-  dropout: 0.3
-  edge_feature_dim: 4
-  graph_cutoff: 8.0
-  hidden_dim: 512
-  input_dim: 26
-  num_ca_layers: 4
-  num_gcn_layers: 4
-  num_heads: 8
-  residue_max: 512
-  residue_min: 50
-paths:
-  checkpoints_dir: checkpoints
-  logs_dir: logs
-  results_dir: results
-prediction:
-  output_format: csv
-  threshold: 0.5
-training:
-  batch_size: 16
-  early_stopping_patience: 50
-  epochs: 150
-  focal_alpha: 0.90
-  focal_gamma: 2.0
-  gradient_clip: 1.0
-  label_smoothing: 0.05
-  learning_rate: 0.001
-  loss: focal
-  lr_scheduler: cosine
-  lr_patience: 15
-  lr_factor: 0.5
-  num_workers: 0
-  seed: 42
-  threshold: 0.3
-  warmup_epochs: 8
-  weight_decay: 0.0001
-web:
-  checkpoint: checkpoints/best_model.pt
-  host: 0.0.0.0
-  port: 8000
