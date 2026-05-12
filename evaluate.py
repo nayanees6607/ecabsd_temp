@@ -70,13 +70,15 @@ def run_evaluation(config_path: str = "config.yaml", checkpoint_path: str = "che
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[ECABSD] Evaluating on device: {device}")
 
-    # Load model
+    # Load model — must match training architecture exactly
     model = ECABSDModel(
         input_dim=mcfg["input_dim"],
         hidden_dim=mcfg["hidden_dim"],
         num_heads=mcfg["num_heads"],
         dropout=0.0,  # No dropout during evaluation
         edge_dim=mcfg["edge_feature_dim"],
+        num_cross_attn_layers=mcfg.get("num_cross_attn_layers", 2),
+        num_gcn_layers=mcfg.get("num_gcn_layers", 4),
     ).to(device)
 
     # Load checkpoint and recover saved threshold
@@ -116,11 +118,10 @@ def run_evaluation(config_path: str = "config.yaml", checkpoint_path: str = "che
         with torch.no_grad():
             for batch in test_loader:
                 data_a = batch["data_a"].to(device)
-                data_b = batch["data_b"].to(device) if batch["data_b"] is not None else None
+                data_b = batch["data_b"].to(device)   # always a Batch (collate_fn guarantees)
                 labels = batch["labels"]
 
                 logits, _ = model(data_a, data_b)
-                # Model now outputs logits — apply sigmoid
                 probs = torch.sigmoid(logits).squeeze(-1).cpu().numpy()
                 all_probs.extend(probs.tolist())
                 all_labels.extend(labels.cpu().numpy().tolist())
@@ -156,13 +157,14 @@ def run_evaluation(config_path: str = "config.yaml", checkpoint_path: str = "che
     all_preds = (all_probs >= best_threshold).astype(int)
 
     metrics = {
-        "accuracy": float(accuracy_score(all_labels, all_preds)),
-        "precision": float(precision_score(all_labels, all_preds, zero_division=0)),
-        "recall": float(recall_score(all_labels, all_preds, zero_division=0)),
-        "f1": float(f1_score(all_labels, all_preds, zero_division=0)),
-        "mcc": float(matthews_corrcoef(all_labels, all_preds)),
-        "num_samples": len(all_labels),
-        "num_positive": int(all_labels.sum()),
+        "accuracy":              float(accuracy_score(all_labels, all_preds)),
+        "precision":             float(precision_score(all_labels, all_preds, zero_division=0)),
+        "recall":                float(recall_score(all_labels, all_preds, zero_division=0)),
+        "f1":                    float(f1_score(all_labels, all_preds, zero_division=0)),
+        "mcc":                   float(matthews_corrcoef(all_labels, all_preds)),
+        "threshold":             float(best_threshold),
+        "num_samples":           len(all_labels),
+        "num_positive":          int(all_labels.sum()),
         "num_predicted_positive": int(all_preds.sum()),
     }
 
