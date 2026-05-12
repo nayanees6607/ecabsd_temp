@@ -6,35 +6,34 @@ data:
   splits_csv: data/db5_splits.csv
 
 model:
-  dropout: 0.2
+  dropout: 0.5
   edge_feature_dim: 5
   graph_cutoff: 10.0
-  hidden_dim: 512
+  hidden_dim: 128
   input_dim: 33
-  num_gcn_layers: 6
-  num_heads: 8
-  num_cross_attn_layers: 4
+  num_gcn_layers: 4
+  num_heads: 4
+  num_cross_attn_layers: 2
   residue_max: 800
   residue_min: 30
 
 training:
-  batch_size: 8
-  dice_weight: 0.4
-  early_stopping_patience: 80
+  batch_size: 4
+  early_stopping_patience: 60
   epochs: 200
   focal_alpha: 0.90
   focal_gamma: 2.0
-  gradient_clip: 1.0
+  gradient_clip: 0.5
   label_smoothing: 0.05
-  learning_rate: 0.0003
+  learning_rate: 0.0002
   loss: focal
   lr_factor: 0.5
   lr_patience: 15
   lr_scheduler: cosine_warmup
   num_workers: 0
   seed: 42
-  warmup_epochs: 20
-  weight_decay: 0.0001
+  warmup_epochs: 10
+  weight_decay: 0.01
 
 prediction:
   output_format: csv

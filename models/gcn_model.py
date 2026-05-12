@@ -1,8 +1,8 @@
 """
-GCN Encoder — 6-layer GATv2Conv stack with residual connections,
-dropout, and batch normalisation.
+GCN Encoder — configurable GATv2Conv stack with residual connections.
 
-Accepts the enriched 5-dim edge features from graph_construction.py.
+Number of layers is controlled by num_layers parameter (default 4).
+hidden_dim must be divisible by num_heads.
 """
 
 import torch
@@ -13,82 +13,65 @@ from torch_geometric.nn import GATv2Conv
 
 class GCNEncoder(torch.nn.Module):
     """
-    6-layer GATv2Conv encoder with:
-      - GELU activations
-      - LayerNorm after each layer
-      - Residual connections from layer 2 onwards
-      - Edge features consumed by every layer
+    Multi-layer GATv2Conv encoder with GELU activations,
+    LayerNorm, and residual connections from layer 2 onwards.
 
     Parameters
     ----------
-    input_dim  : node feature dim (33 after upgrade)
+    input_dim  : node feature dim (33)
     hidden_dim : representation dim (must be divisible by num_heads)
-    edge_dim   : edge feature dim  (5 after upgrade)
-    num_heads  : attention heads per intermediate layer
+    edge_dim   : edge feature dim  (5)
+    num_heads  : attention heads per layer
     dropout    : dropout rate
+    num_layers : total GATv2 layers (default 4)
     """
 
     def __init__(
         self,
         input_dim: int = 33,
-        hidden_dim: int = 512,
+        hidden_dim: int = 128,
         edge_dim: int = 5,
-        num_heads: int = 8,
-        dropout: float = 0.2,
+        num_heads: int = 4,
+        dropout: float = 0.5,
+        num_layers: int = 4,
     ):
         super().__init__()
+        assert hidden_dim % num_heads == 0, \
+            f"hidden_dim ({hidden_dim}) must be divisible by num_heads ({num_heads})"
 
-        head_dim = hidden_dim // num_heads
+        head_dim   = hidden_dim // num_heads
+        self.drop  = nn.Dropout(dropout)
 
-        # Input projection: input_dim → hidden_dim
-        self.conv1 = GATv2Conv(
-            input_dim, head_dim, heads=num_heads,
-            edge_dim=edge_dim, dropout=dropout, concat=True,
-        )
+        self.convs = nn.ModuleList()
+        self.norms = nn.ModuleList()
 
-        # Layers 2-5: hidden_dim → hidden_dim (with residuals)
-        self.conv2 = GATv2Conv(
-            hidden_dim, head_dim, heads=num_heads,
-            edge_dim=edge_dim, dropout=dropout, concat=True,
-        )
-        self.conv3 = GATv2Conv(
-            hidden_dim, head_dim, heads=num_heads,
-            edge_dim=edge_dim, dropout=dropout, concat=True,
-        )
-        self.conv4 = GATv2Conv(
-            hidden_dim, head_dim, heads=num_heads,
-            edge_dim=edge_dim, dropout=dropout, concat=True,
-        )
-        self.conv5 = GATv2Conv(
-            hidden_dim, head_dim, heads=num_heads,
-            edge_dim=edge_dim, dropout=dropout, concat=True,
-        )
+        for i in range(num_layers):
+            in_dim  = input_dim  if i == 0 else hidden_dim
+            # Last layer: single head, no concat → outputs hidden_dim
+            if i == num_layers - 1:
+                self.convs.append(
+                    GATv2Conv(in_dim, hidden_dim, heads=1,
+                              edge_dim=edge_dim, dropout=dropout, concat=False)
+                )
+            else:
+                self.convs.append(
+                    GATv2Conv(in_dim, head_dim, heads=num_heads,
+                              edge_dim=edge_dim, dropout=dropout, concat=True)
+                )
+                self.norms.append(nn.LayerNorm(hidden_dim))
 
-        # Final layer: single head, no concat
-        self.conv6 = GATv2Conv(
-            hidden_dim, hidden_dim, heads=1,
-            edge_dim=edge_dim, dropout=dropout, concat=False,
-        )
-
-        self.norm1 = nn.LayerNorm(hidden_dim)
-        self.norm2 = nn.LayerNorm(hidden_dim)
-        self.norm3 = nn.LayerNorm(hidden_dim)
-        self.norm4 = nn.LayerNorm(hidden_dim)
-        self.norm5 = nn.LayerNorm(hidden_dim)
-
-        self.dropout = nn.Dropout(dropout)
+        self.num_layers = num_layers
 
     def forward(self, x, edge_index, edge_attr):
-        h1 = F.gelu(self.norm1(self.conv1(x, edge_index, edge_attr)))
-
-        h2 = F.gelu(self.norm2(self.conv2(h1, edge_index, edge_attr))) + h1
-
-        h3 = F.gelu(self.norm3(self.conv3(h2, edge_index, edge_attr))) + h2
-
-        h4 = F.gelu(self.norm4(self.conv4(h3, edge_index, edge_attr))) + h3
-
-        h5 = F.gelu(self.norm5(self.conv5(h4, edge_index, edge_attr))) + h4
-
-        h6 = self.conv6(h5, edge_index, edge_attr) + h5
-
-        return self.dropout(h6)
+        h = x
+        for i, conv in enumerate(self.convs):
+            h_new = conv(h, edge_index, edge_attr)
+            if i < self.num_layers - 1:
+                h_new = F.gelu(self.norms[i](h_new))
+                if i > 0:         # residual from layer 2 onwards
+                    h_new = h_new + h
+                h = self.drop(h_new)
+            else:
+                # Final layer: residual only (no norm/activation on output)
+                h = h_new + h
+        return h

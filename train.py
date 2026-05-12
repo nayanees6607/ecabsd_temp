@@ -269,6 +269,7 @@ def run_training(config_path: str = "config.yaml", resume_from: str = None):
         dropout=mcfg["dropout"],
         edge_dim=mcfg["edge_feature_dim"],
         num_cross_attn_layers=mcfg.get("num_cross_attn_layers", 2),
+        num_gcn_layers=mcfg.get("num_gcn_layers", 4),
     ).to(device)
 
     total_params = sum(p.numel() for p in model.parameters())

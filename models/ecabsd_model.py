@@ -47,11 +47,12 @@ class ECABSDModel(nn.Module):
     def __init__(
         self,
         input_dim:  int   = 33,
-        hidden_dim: int   = 512,
-        num_heads:  int   = 8,
-        dropout:    float = 0.2,
+        hidden_dim: int   = 128,
+        num_heads:  int   = 4,
+        dropout:    float = 0.5,
         edge_dim:   int   = 5,
         num_cross_attn_layers: int = 2,
+        num_gcn_layers: int = 4,
     ):
         super().__init__()
 
@@ -61,6 +62,7 @@ class ECABSDModel(nn.Module):
             edge_dim=edge_dim,
             num_heads=num_heads,
             dropout=dropout,
+            num_layers=num_gcn_layers,
         )
 
         self.se3_refine = SE3Transformer(
