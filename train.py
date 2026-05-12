@@ -168,15 +168,28 @@ def compute_metrics(all_labels, all_preds, all_probs=None) -> dict:
 # Train / validate
 # ---------------------------------------------------------------------------
 
-def train_one_epoch(model, loader, optimizer, criterion, device, gradient_clip):
+def train_one_epoch(model, loader, optimizer, criterion, device, gradient_clip,
+                    chain_swap_prob: float = 0.5):
+    """
+    Train one epoch. With chain_swap_prob probability, swap data_a and data_b
+    so the model predicts binding sites on chain B instead of chain A.
+    This doubles effective training data at zero cost.
+    """
     model.train()
     total_loss = 0.0
     all_labels, all_preds = [], []
 
     for sample in loader:
         data_a  = sample["data_a"].to(device)
-        data_b  = sample["data_b"].to(device)   # always a Batch now (never None)
-        labels  = sample["labels"].to(device)   # already flat-concatenated by collate_fn
+        data_b  = sample["data_b"].to(device)
+        labels  = sample["labels"].to(device)
+
+        # Chain-swap augmentation: swap A and B, use B's labels as target
+        if chain_swap_prob > 0 and random.random() < chain_swap_prob:
+            # data_b.y holds binding labels for chain B (set by prepare_db5.py)
+            if hasattr(data_b, 'y') and data_b.y is not None:
+                data_a, data_b = data_b, data_a
+                labels = data_a.y.float().to(device)
 
         optimizer.zero_grad()
         logits, _ = model(data_a, data_b)
@@ -347,7 +360,9 @@ def run_training(config_path: str = "config.yaml", resume_from: str = None):
         t0 = time.time()
 
         train_metrics = train_one_epoch(
-            model, train_loader, optimizer, criterion, device, tcfg["gradient_clip"]
+            model, train_loader, optimizer, criterion, device,
+            tcfg["gradient_clip"],
+            chain_swap_prob=tcfg.get("chain_swap_prob", 0.5),
         )
         val_metrics   = validate(model, val_loader, criterion, device)
         best_threshold = val_metrics["best_threshold"]
