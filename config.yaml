@@ -13,7 +13,7 @@ model:
   input_dim: 33
   num_gcn_layers: 6
   num_heads: 8
-  num_cross_attn_layers: 2
+  num_cross_attn_layers: 4
   residue_max: 800
   residue_min: 30
 

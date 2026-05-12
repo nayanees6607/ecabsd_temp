@@ -1,79 +1,205 @@
 """
-Stacked Cross-Attention module.
+CrossAttention module — adapted from CrossPPI (drugparadigm/CrossPPI).
 
-Each layer applies:
-  1. Pre-LayerNorm cross-attention (chain A queries chain B)
-  2. Residual connection + dropout
-  3. Pre-LayerNorm feed-forward network (2× expansion)
-  4. Residual connection + dropout
+Key design: BIDIRECTIONAL CrossFusion.
+Chain A queries chain B AND chain B simultaneously queries chain A.
+Both chains enrich each other before classification, exactly as in CrossPPI.
 
-Multiple layers are stacked so the model can iteratively refine
-the partner-aware residue representations.
+Architecture per layer:
+  CrossFusion:
+    - receptor queries ligand → context_receptor
+    - ligand queries receptor → context_ligand
+  SelfOutput  : dense + dropout + LayerNorm + residual (for both chains)
+  Intermediate: dense + ReLU (for both chains)
+  Output      : dense + dropout + LayerNorm + residual (for both chains)
+
+Multiple Encoder layers are stacked (default 4, same as CrossPPI).
 """
 
+import math
+import copy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-class CrossAttentionLayer(nn.Module):
-    """Single cross-attention layer with pre-norm + FFN."""
-
-    def __init__(self, embed_dim: int = 512, num_heads: int = 8, dropout: float = 0.1):
+class LayerNorm(nn.Module):
+    def __init__(self, hidden_size, eps=1e-12):
         super().__init__()
-        self.norm_q  = nn.LayerNorm(embed_dim)
-        self.norm_kv = nn.LayerNorm(embed_dim)
-        self.attn    = nn.MultiheadAttention(
-            embed_dim=embed_dim, num_heads=num_heads,
-            dropout=dropout, batch_first=True,
-        )
-        self.drop    = nn.Dropout(dropout)
+        self.gamma = nn.Parameter(torch.ones(hidden_size))
+        self.beta  = nn.Parameter(torch.zeros(hidden_size))
+        self.eps   = eps
 
-        self.norm_ff = nn.LayerNorm(embed_dim)
-        self.ff      = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim * 4),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(embed_dim * 4, embed_dim),
-        )
+    def forward(self, x):
+        mean = x.mean(-1, keepdim=True)
+        var  = (x - mean).pow(2).mean(-1, keepdim=True)
+        x    = (x - mean) / torch.sqrt(var + self.eps)
+        return self.gamma * x + self.beta
 
-    def forward(self, x_a, x_b):
-        # Pre-norm cross attention
-        q   = self.norm_q(x_a)
-        kv  = self.norm_kv(x_b)
-        out, attn_w = self.attn(q, kv, kv)
-        x_a = x_a + self.drop(out)
 
-        # FFN
-        x_a = x_a + self.ff(self.norm_ff(x_a))
-        return x_a, attn_w
+class CrossFusion(nn.Module):
+    """
+    Bidirectional cross-attention.
+    Receptor queries Ligand; Ligand queries Receptor simultaneously.
+    Directly adapted from CrossPPI CrossFusion class.
+    """
+
+    def __init__(self, hidden_size, num_heads, attn_dropout):
+        super().__init__()
+        assert hidden_size % num_heads == 0, \
+            f"hidden_size ({hidden_size}) must be divisible by num_heads ({num_heads})"
+        self.num_heads     = num_heads
+        self.head_size     = hidden_size // num_heads
+        self.all_head_size = hidden_size
+
+        # Separate Q/K/V projections for each chain
+        self.q_a = nn.Linear(hidden_size, hidden_size)
+        self.k_a = nn.Linear(hidden_size, hidden_size)
+        self.v_a = nn.Linear(hidden_size, hidden_size)
+
+        self.q_b = nn.Linear(hidden_size, hidden_size)
+        self.k_b = nn.Linear(hidden_size, hidden_size)
+        self.v_b = nn.Linear(hidden_size, hidden_size)
+
+        self.dropout = nn.Dropout(attn_dropout)
+
+    def _split_heads(self, x):
+        """(B, L, D) → (B, H, L, d_h)"""
+        B, L, _ = x.shape
+        x = x.view(B, L, self.num_heads, self.head_size)
+        return x.permute(0, 2, 1, 3)
+
+    def _merge_heads(self, x):
+        """(B, H, L, d_h) → (B, L, D)"""
+        x = x.permute(0, 2, 1, 3).contiguous()
+        B, L, _, _ = x.shape
+        return x.view(B, L, self.all_head_size)
+
+    def forward(self, h_a, h_b):
+        """
+        h_a : (1, N_a, D) — chain A (receptor)
+        h_b : (1, N_b, D) — chain B (ligand)
+        Returns enriched (h_a, h_b) and (attn_a, attn_b) weight tensors.
+        """
+        scale = math.sqrt(self.head_size)
+
+        # Chain A queries Chain B
+        q_a = self._split_heads(self.q_a(h_a))
+        k_b = self._split_heads(self.k_b(h_b))
+        v_b = self._split_heads(self.v_b(h_b))
+        attn_a = torch.softmax(torch.matmul(q_a, k_b.transpose(-1, -2)) / scale, dim=-1)
+        attn_a = self.dropout(attn_a)
+        ctx_a  = self._merge_heads(torch.matmul(attn_a, v_b))   # (1, N_a, D)
+
+        # Chain B queries Chain A
+        q_b = self._split_heads(self.q_b(h_b))
+        k_a = self._split_heads(self.k_a(h_a))
+        v_a = self._split_heads(self.v_a(h_a))
+        attn_b = torch.softmax(torch.matmul(q_b, k_a.transpose(-1, -2)) / scale, dim=-1)
+        attn_b = self.dropout(attn_b)
+        ctx_b  = self._merge_heads(torch.matmul(attn_b, v_a))   # (1, N_b, D)
+
+        return (ctx_a, ctx_b), (attn_a, attn_b)
+
+
+class SelfOutput(nn.Module):
+    """Dense projection + dropout + LayerNorm + residual (both chains)."""
+
+    def __init__(self, hidden_size, dropout):
+        super().__init__()
+        self.dense_a  = nn.Linear(hidden_size, hidden_size)
+        self.dense_b  = nn.Linear(hidden_size, hidden_size)
+        self.norm     = LayerNorm(hidden_size)
+        self.dropout  = nn.Dropout(dropout)
+
+    def forward(self, ctx, residual):
+        ctx_a = self.norm(self.dropout(self.dense_a(ctx[0])) + residual[0])
+        ctx_b = self.norm(self.dropout(self.dense_b(ctx[1])) + residual[1])
+        return ctx_a, ctx_b
+
+
+class Intermediate(nn.Module):
+    """Position-wise FFN after attention (ReLU, both chains)."""
+
+    def __init__(self, hidden_size):
+        super().__init__()
+        self.dense_a = nn.Linear(hidden_size, hidden_size * 2)
+        self.dense_b = nn.Linear(hidden_size, hidden_size * 2)
+        self.proj_a  = nn.Linear(hidden_size * 2, hidden_size)
+        self.proj_b  = nn.Linear(hidden_size * 2, hidden_size)
+
+    def forward(self, h_a, h_b):
+        h_a = F.gelu(self.dense_a(h_a))
+        h_b = F.gelu(self.dense_b(h_b))
+        return self.proj_a(h_a), self.proj_b(h_b)
+
+
+class CrossPPIOutput(nn.Module):
+    """Final projection + dropout + LayerNorm + residual."""
+
+    def __init__(self, hidden_size, dropout):
+        super().__init__()
+        self.dense_a = nn.Linear(hidden_size, hidden_size)
+        self.dense_b = nn.Linear(hidden_size, hidden_size)
+        self.norm    = LayerNorm(hidden_size)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, h_a, h_b, residual_a, residual_b):
+        h_a = self.norm(self.dropout(self.dense_a(h_a)) + residual_a)
+        h_b = self.norm(self.dropout(self.dense_b(h_b)) + residual_b)
+        return h_a, h_b
+
+
+class CrossEncoder(nn.Module):
+    """
+    One full CrossPPI encoder layer:
+      CrossFusion → SelfOutput → Intermediate → CrossPPIOutput
+    """
+
+    def __init__(self, hidden_size, num_heads, attn_dropout, hidden_dropout):
+        super().__init__()
+        self.fusion  = CrossFusion(hidden_size, num_heads, attn_dropout)
+        self.out1    = SelfOutput(hidden_size, hidden_dropout)
+        self.inter   = Intermediate(hidden_size)
+        self.out2    = CrossPPIOutput(hidden_size, hidden_dropout)
+
+    def forward(self, h_a, h_b):
+        (ctx_a, ctx_b), attn = self.fusion(h_a, h_b)
+        h_a2, h_b2 = self.out1((ctx_a, ctx_b), (h_a, h_b))
+        h_a3, h_b3 = self.inter(h_a2, h_b2)
+        h_a4, h_b4 = self.out2(h_a3, h_b3, h_a2, h_b2)
+        return h_a4, h_b4, attn
 
 
 class CrossAttention(nn.Module):
     """
-    Stacked cross-attention: `num_layers` layers of CrossAttentionLayer.
+    Stacked CrossPPI-style bidirectional cross-attention.
 
-    Returns the output of the final layer and the attention weights
-    of the first layer (for interpretability / visualisation).
+    Parameters
+    ----------
+    embed_dim       : token embedding dimension (= hidden_dim)
+    num_heads       : number of attention heads
+    dropout         : dropout probability
+    num_layers      : number of stacked CrossEncoder layers (default 4)
     """
 
-    def __init__(self, embed_dim: int = 512, num_heads: int = 8,
-                 dropout: float = 0.1, num_layers: int = 2):
+    def __init__(self, embed_dim=512, num_heads=8, dropout=0.1, num_layers=4):
         super().__init__()
-        self.layers = nn.ModuleList([
-            CrossAttentionLayer(embed_dim, num_heads, dropout)
-            for _ in range(num_layers)
-        ])
+        layer = CrossEncoder(embed_dim, num_heads, dropout, dropout)
+        self.layers = nn.ModuleList([copy.deepcopy(layer) for _ in range(num_layers)])
 
     def forward(self, x_a: torch.Tensor, x_b: torch.Tensor):
         """
         x_a : (1, N_a, D)
         x_b : (1, N_b, D)
-        Returns enriched x_a and first-layer attention weights.
+
+        Returns:
+          x_a    : (1, N_a, D)   — enriched chain A
+          attn_a : (1, H, N_a, N_b) — chain A's attention over chain B
         """
         first_attn = None
         for i, layer in enumerate(self.layers):
-            x_a, attn_w = layer(x_a, x_b)
+            x_a, x_b, (attn_a, _) = layer(x_a, x_b)
             if i == 0:
-                first_attn = attn_w
+                first_attn = attn_a
         return x_a, first_attn
