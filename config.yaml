@@ -1,59 +1,52 @@
-# ─────────────────────────────────────────────────────────────
-# ECABSD — Equivariant Cross-Attention for Binding Site Detection
-# Central configuration file
-# ─────────────────────────────────────────────────────────────
-
 data:
-  raw_dir: "data/raw"
-  processed_dir: "data/db5_processed"
-  pdb_dir: "data/raw/pdbs"
-  splits_csv: "data/db5_splits.csv"
-  ligand_distance_cutoff: 4.5        # Å — residue within this distance of ligand = binding site
-model:
-  input_dim: 23                       # 20 AA one-hot + 3 SS one-hot (26 after dataset reprocess with new graph_construction.py)
-  hidden_dim: 256                     # increased from 128 for richer representations
-  num_gcn_layers: 4
-  num_heads: 8                        # cross-attention heads
-  edge_feature_dim: 4                 # distance + 3D unit vector
-  graph_cutoff: 8.0                   # Å — edge distance cutoff
-  dropout: 0.3                        # increased from 0.2
-  residue_min: 50
-  residue_max: 512
-
-training:
-  epochs: 150                         # increased from 100
-  batch_size: 16
-  learning_rate: 0.0003               # reduced from 0.001 for stable GNN convergence
-  weight_decay: 0.001                 # increased from 0.0001 for stronger regularization
-  lr_scheduler: "cosine"             # cosine annealing for smooth decay
-  lr_patience: 5
-  lr_factor: 0.5
-  early_stopping_patience: 30        # increased from 20
-  loss: "focal"                       # focal | bce  — focal suppresses easy negatives
-  focal_alpha: 0.75                   # focal loss alpha (weight for positive class)
-  focal_gamma: 2.0                    # focal loss gamma (focusing parameter)
-  pos_weight: auto                    # auto = computed from dataset ratio; or set a float
-  gradient_clip: 1.0
-  seed: 42
-  num_workers: 0
-
-prediction:
-  threshold: 0.5                      # run tune_threshold.py to find optimal value
-  output_format: "csv"                # csv | json | pymol
-
-paths:
-  checkpoints_dir: "checkpoints"
-  logs_dir: "logs"
-  results_dir: "results"
-
-web:
-  host: "0.0.0.0"
-  port: 8000
-  checkpoint: "checkpoints/best_model.pt"
-
+  ligand_distance_cutoff: 4.5
+  pdb_dir: data/raw/pdbs
+  processed_dir: data/db5_processed
+  raw_dir: data/raw
+  splits_csv: data/db5_splits.csv
 docking:
-  vina_executable: "vina"
+  box_padding: 5.0
+  energy_range: 3
   exhaustiveness: 8
   num_modes: 9
-  energy_range: 3
-  box_padding: 5.0                    # Å padding around predicted site
+  vina_executable: vina
+model:
+  dropout: 0.3
+  edge_feature_dim: 4
+  graph_cutoff: 8.0
+  hidden_dim: 256
+  input_dim: 23
+  num_ca_layers: 4
+  num_gcn_layers: 4
+  num_heads: 8
+  residue_max: 512
+  residue_min: 50
+paths:
+  checkpoints_dir: checkpoints
+  logs_dir: logs
+  results_dir: results
+prediction:
+  output_format: csv
+  threshold: 0.5
+training:
+  batch_size: 1
+  early_stopping_patience: 20
+  epochs: 100
+  focal_alpha: 0.75
+  focal_gamma: 2.0
+  gradient_clip: 1.0
+  label_smoothing: 0.05
+  learning_rate: 0.001
+  loss: focal
+  lr_scheduler: plateau
+  lr_patience: 5
+  lr_factor: 0.5
+  num_workers: 0
+  seed: 42
+  threshold: 0.3
+  warmup_epochs: 8
+  weight_decay: 0.0001
+web:
+  checkpoint: checkpoints/best_model.pt
+  host: 0.0.0.0
+  port: 8000
