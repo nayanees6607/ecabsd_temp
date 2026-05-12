@@ -29,7 +29,7 @@ prediction:
   output_format: csv
   threshold: 0.5
 training:
-  batch_size: 1
+  batch_size: 16
   early_stopping_patience: 50
   epochs: 100
   focal_alpha: 0.90
