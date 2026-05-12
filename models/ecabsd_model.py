@@ -24,6 +24,7 @@ Improvements over v1:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch_geometric.utils import unbatch
 
 from .gcn_model      import GCNEncoder
 from .se3_model      import SE3Transformer
@@ -114,27 +115,44 @@ class ECABSDModel(nn.Module):
         attn_weights: (N_a, N_b) — cross-attention weights
         """
         # Encode both chains
-        h_a = self.encode_chain(data_a.x, data_a.edge_index, data_a.edge_attr)  # (N_a, D)
+        h_a = self.encode_chain(data_a.x, data_a.edge_index, data_a.edge_attr)  # (Sum_N_a, D)
         h_b = self.encode_chain(data_b.x, data_b.edge_index, data_b.edge_attr) \
-              if data_b is not None else h_a                                      # (N_b, D)
+              if data_b is not None else h_a                                      # (Sum_N_b, D)
 
-        # Cross-attention  (batch dim required for nn.MultiheadAttention)
-        h_a_seq = h_a.unsqueeze(0)   # (1, N_a, D)
-        h_b_seq = h_b.unsqueeze(0)   # (1, N_b, D)
+        # To prevent cross-sample contamination in a batch, we must unbatch before attention
+        # data.batch is a 1D tensor assigning each node to its graph index.
+        # If batch is missing (e.g. inference with single Data), default to all zeros.
+        batch_a = data_a.batch if hasattr(data_a, 'batch') and data_a.batch is not None else torch.zeros(data_a.num_nodes, dtype=torch.long, device=data_a.x.device)
+        batch_b = data_b.batch if hasattr(data_b, 'batch') and data_b.batch is not None else torch.zeros(data_b.num_nodes, dtype=torch.long, device=data_b.x.device)
 
-        cross_out, attn_weights = self.cross_attention(h_a_seq, h_b_seq)
-        cross_out = cross_out.squeeze(0)     # (N_a, D)
-        attn_weights = attn_weights.squeeze(0)  # (N_a, N_b)
+        h_a_list = unbatch(h_a, batch_a)
+        h_b_list = unbatch(h_b, batch_b)
 
-        # Global context: mean-pool over all residues of fused representation
-        # broadcast as a constant background signal to every residue
-        global_ctx = self.global_proj(cross_out.mean(dim=0, keepdim=True))  # (1, D)
-        h_fused = self.norm_fuse(cross_out + global_ctx)                     # (N_a, D)
+        cross_out_list = []
+        attn_list = []
+
+        # Process each complex in the batch independently
+        for h_a_single, h_b_single in zip(h_a_list, h_b_list):
+            h_a_seq = h_a_single.unsqueeze(0)  # (1, N_a, D)
+            h_b_seq = h_b_single.unsqueeze(0)  # (1, N_b, D)
+
+            cross_out, attn_weights = self.cross_attention(h_a_seq, h_b_seq)
+            
+            # Global context for THIS specific complex
+            global_ctx = self.global_proj(cross_out.mean(dim=1, keepdim=True))  # (1, 1, D)
+            h_fused_single = self.norm_fuse(cross_out + global_ctx)             # (1, N_a, D)
+
+            cross_out_list.append(h_fused_single.squeeze(0))
+            attn_list.append(attn_weights.squeeze(0))
+
+        # Re-concatenate into batch format
+        h_fused = torch.cat(cross_out_list, dim=0)   # (Sum_N_a, D)
 
         # Per-residue classification
-        logits = self.classifier(h_fused)   # (N_a, 1)
+        logits = self.classifier(h_fused)   # (Sum_N_a, 1)
 
-        return logits, attn_weights
+        # We return the list of attention weights, one per complex in the batch
+        return logits, attn_list
 
     def predict(self, data_a, data_b=None, threshold: float = 0.5):
         """Convenience inference method."""
