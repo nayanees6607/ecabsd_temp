@@ -30,7 +30,7 @@ prediction:
   threshold: 0.5
 training:
   batch_size: 1
-  early_stopping_patience: 30
+  early_stopping_patience: 50
   epochs: 100
   focal_alpha: 0.90
   focal_gamma: 2.0
