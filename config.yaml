@@ -18,7 +18,7 @@ model:
 
 training:
   batch_size: 8
-  early_stopping_patience: 40
+  early_stopping_patience: 80
   epochs: 200
   focal_alpha: 0.90
   focal_gamma: 2.0

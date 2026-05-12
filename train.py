@@ -309,6 +309,7 @@ def run_training(config_path: str = "config.yaml", resume_from: str = None):
     patience_counter = 0
     history          = []
     best_threshold   = 0.5
+    best_val_f1      = -1.0  # track F1 for early stopping & model saving
 
     print(f"\n{'='*60}")
     print(f"  ECABSD Training — {tcfg['epochs']} epochs")
@@ -350,9 +351,11 @@ def run_training(config_path: str = "config.yaml", resume_from: str = None):
         }
         history.append(epoch_record)
 
-        # Save best model
-        if val_metrics["loss"] < best_val_loss:
-            best_val_loss    = val_metrics["loss"]
+        # Save best model (monitor val F1, not val loss)
+        current_f1 = val_metrics["f1"]
+        if current_f1 > best_val_f1:
+            best_val_f1      = current_f1
+            best_val_loss    = val_metrics["loss"]  # track for logging
             patience_counter = 0
             ckpt_path        = os.path.join(pcfg["checkpoints_dir"], "best_model.pt")
             torch.save(
@@ -361,12 +364,13 @@ def run_training(config_path: str = "config.yaml", resume_from: str = None):
                     "model_state_dict":     model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "best_val_loss":        best_val_loss,
+                    "best_val_f1":          best_val_f1,
                     "best_threshold":       best_threshold,
                     "config":               cfg,
                 },
                 ckpt_path,
             )
-            print(f"  -> Saved best model (val_loss={best_val_loss:.4f}, best_threshold={best_threshold:.4f})")
+            print(f"  -> Saved best model (val_F1={best_val_f1:.4f}, threshold={best_threshold:.4f})")
         else:
             patience_counter += 1
 
@@ -402,7 +406,9 @@ def run_training(config_path: str = "config.yaml", resume_from: str = None):
         yaml.dump(cfg_out, f, default_flow_style=False, sort_keys=False)
 
     print(f"\n{'='*60}")
-    print(f"  Training complete. Best val loss: {best_val_loss:.4f}")
+    print(f"  Training complete.")
+    print(f"  Best val F1:       {best_val_f1:.4f}")
+    print(f"  Best val loss:     {best_val_loss:.4f}")
     print(f"  Best threshold:    {best_threshold:.4f}")
     print(f"  History saved to:  {history_path}")
     print(f"{'='*60}")
