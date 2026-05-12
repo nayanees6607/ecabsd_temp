@@ -171,10 +171,11 @@ def train_one_epoch(model, loader, optimizer, criterion, device, gradient_clip):
 
 @torch.no_grad()
 def validate(model, loader, criterion, device):
-    """Run validation and collect raw probabilities for threshold tuning."""
+    """Run validation and sweep threshold for best F1."""
     model.eval()
     total_loss = 0.0
-    all_labels, all_preds, all_probs = [], [], []
+    all_labels = []
+    all_probs  = []
 
     for sample in loader:
         data_a  = sample["data_a"].to(device)
@@ -188,35 +189,29 @@ def validate(model, loader, criterion, device):
         total_loss += loss.item() * labels.size(0)
 
         probs        = torch.sigmoid(logits)
-        binary_preds = (probs >= 0.5).long().cpu().numpy()
-        all_labels.extend(labels.cpu().numpy().tolist())
-        all_preds.extend(binary_preds.tolist())
         all_probs.extend(probs.cpu().numpy().tolist())
+        all_labels.extend(labels.cpu().numpy().tolist())
 
     avg_loss        = total_loss / max(len(all_labels), 1)
-    metrics         = compute_metrics(all_labels, all_preds)
+
+    import numpy as np
+    from sklearn.metrics import precision_recall_curve
+    all_probs_np  = np.array(all_probs)
+    all_labels_np = np.array(all_labels)
+
+    if len(np.unique(all_labels_np)) > 1:
+        precisions, recalls, thresh_vals = precision_recall_curve(all_labels_np, all_probs_np)
+        f1_vals = 2 * (precisions * recalls) / (precisions + recalls + 1e-8)
+        best_idx = int(np.argmax(f1_vals[:-1]))
+        best_threshold = float(thresh_vals[best_idx])
+    else:
+        best_threshold = 0.5
+
+    all_preds = (all_probs_np >= best_threshold).astype(int).tolist()
+    metrics = compute_metrics(all_labels, all_preds)
     metrics["loss"] = avg_loss
-    return metrics, np.array(all_labels), np.array(all_probs)
-
-
-def find_best_threshold(all_labels: np.ndarray, all_probs: np.ndarray) -> tuple[float, float]:
-    """
-    Sweep thresholds 0.1 → 0.9 and return the one that maximises F1.
-
-    Returns
-    -------
-    best_threshold : float
-    best_f1        : float
-    """
-    from sklearn.metrics import f1_score as _f1
-
-    best_t, best_f1 = 0.5, 0.0
-    for t in np.arange(0.1, 0.91, 0.02):
-        preds = (all_probs >= t).astype(int)
-        f1    = _f1(all_labels, preds, zero_division=0)
-        if f1 > best_f1:
-            best_f1, best_t = f1, float(t)
-    return best_t, best_f1
+    metrics["best_threshold"] = best_threshold
+    return metrics
 
 
 # ---------------------------------------------------------------------------
@@ -264,12 +259,12 @@ def run_training(config_path: str = "config.yaml", resume_from: str = None):
         val_dataset   = BindingSiteDataset(processed_dir, splits_csv, split="val")
 
         train_loader = DataLoader(
-            train_dataset, batch_size=1, shuffle=True,
-            num_workers=0, collate_fn=collate_fn,
+            train_dataset, batch_size=tcfg["batch_size"], shuffle=True,
+            num_workers=tcfg["num_workers"], collate_fn=collate_fn,
         )
         val_loader = DataLoader(
-            val_dataset, batch_size=1, shuffle=False,
-            num_workers=0, collate_fn=collate_fn,
+            val_dataset, batch_size=tcfg["batch_size"], shuffle=False,
+            num_workers=tcfg["num_workers"], collate_fn=collate_fn,
         )
 
         # Auto pos_weight from data
@@ -280,30 +275,8 @@ def run_training(config_path: str = "config.yaml", resume_from: str = None):
             print(f"[ECABSD] pos_weight = {pos_weight_val:.2f}")
     else:
         print(f"[ECABSD] WARNING: Processed data not found at '{processed_dir}'.")
-        print(f"[ECABSD] Run 'python scripts/prepare_dataset.py' first.")
-        print(f"[ECABSD] Using dummy data for demonstration...")
-
-        from models.graph_construction import build_residue_graph
-        sample_pdb = "1AY7.pdb"
-        if os.path.exists(sample_pdb):
-            data_a    = build_residue_graph(sample_pdb, "A")
-            data_a.y  = torch.zeros(data_a.num_residues)
-            data_a.y[:10] = 1.0
-
-            class DummyBatch:
-                def __init__(self, data):
-                    self.data = data
-                def __iter__(self):
-                    yield {"data_a": self.data, "data_b": None, "labels": self.data.y}
-                def __len__(self):
-                    return 1
-
-            train_loader = DummyBatch(data_a)
-            val_loader   = DummyBatch(data_a)
-            pos_weight_val = 7.0
-        else:
-            print("[ECABSD] ERROR: No PDB file found. Cannot train.")
-            return
+        print(f"[ECABSD] Run 'python scripts/prepare_db5.py' first.")
+        return
 
     # Loss function
     criterion = build_criterion(tcfg, pos_weight_val, device)
@@ -347,7 +320,8 @@ def run_training(config_path: str = "config.yaml", resume_from: str = None):
         train_metrics = train_one_epoch(
             model, train_loader, optimizer, criterion, device, tcfg["gradient_clip"]
         )
-        val_metrics, val_labels, val_probs = validate(model, val_loader, criterion, device)
+        val_metrics = validate(model, val_loader, criterion, device)
+        best_threshold = val_metrics["best_threshold"]
 
         elapsed = time.time() - t0
 
@@ -357,11 +331,6 @@ def run_training(config_path: str = "config.yaml", resume_from: str = None):
                 scheduler.step(val_metrics["loss"])
             else:
                 scheduler.step()
-
-        # Threshold tuning (every 10 epochs after warmup)
-        if (epoch + 1) >= 10 and (epoch + 1) % 10 == 0 and len(np.unique(val_labels)) > 1:
-            best_threshold, best_t_f1 = find_best_threshold(val_labels, val_probs)
-            print(f"  [Threshold] Best val threshold: {best_threshold:.2f}  F1={best_t_f1:.4f}")
 
         lr = optimizer.param_groups[0]["lr"]
         print(
@@ -397,7 +366,7 @@ def run_training(config_path: str = "config.yaml", resume_from: str = None):
                 },
                 ckpt_path,
             )
-            print(f"  -> Saved best model (val_loss={best_val_loss:.4f})")
+            print(f"  -> Saved best model (val_loss={best_val_loss:.4f}, best_threshold={best_threshold:.4f})")
         else:
             patience_counter += 1
 

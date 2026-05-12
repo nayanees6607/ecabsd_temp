@@ -150,19 +150,8 @@ def run_evaluation(config_path: str = "config.yaml", checkpoint_path: str = "che
     all_probs  = np.array(all_probs)
     all_labels = np.array(all_labels)
 
-    # Threshold sweep — find the value that maximises F1
-    from sklearn.metrics import f1_score as _f1, precision_recall_curve
-    if len(np.unique(all_labels)) > 1:
-        precisions, recalls, thresh_vals = precision_recall_curve(all_labels, all_probs)
-        f1_vals   = 2 * (precisions * recalls) / (precisions + recalls + 1e-8)
-        best_idx  = int(np.argmax(f1_vals[:-1]))  # last point has no threshold
-        best_threshold = float(thresh_vals[best_idx])
-        print(f"  [Threshold sweep] Optimal threshold: {best_threshold:.4f}  "
-              f"(F1={f1_vals[best_idx]:.4f})")
-        print(f"  [Threshold saved] Using: {best_threshold:.4f}  "
-              f"(overrides checkpoint value {saved_threshold:.4f})")
-    else:
-        best_threshold = saved_threshold
+    best_threshold = saved_threshold  # comes from checkpoint["best_threshold"]
+    print(f"  [Threshold] Using val-optimised threshold: {best_threshold:.4f}")
 
     all_preds = (all_probs >= best_threshold).astype(int)
 
