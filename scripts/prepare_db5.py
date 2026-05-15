@@ -132,12 +132,19 @@ def prepare_db5(db5_dir, output_dir, distance_cutoff, train_ratio, val_ratio, se
         writer.writeheader()
         writer.writerows(successful)
 
-    print(f"\n{'='*60}\n  DB5 Dataset Preparation Complete\n{'='*60}")
+    print("=" * 60)
+    print("  DB5 Dataset Preparation Complete")
+    print("=" * 60)
     print(f"  Complexes processed:  {len(complexes)}")
     print(f"  Total Chains:         {len(successful)}")
     print(f"  Errors:               {len(all_errors)}")
+    if all_errors:
+        print("\n  [ERROR LOG (First 5)]")
+        for err in all_errors[:5]:
+            print(f"    - {err}")
     print(f"  Train/Val/Test split: {len(train_complexes)} / {len(val_complexes)} / {len(test_complexes)} complexes")
-    print(f"  Splits CSV:           {splits_path}\n{'='*60}")
+    print(f"  Splits CSV:           {splits_path}")
+    print("=" * 60)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
