@@ -26,8 +26,14 @@ import numpy as np
 import torch
 from torch_geometric.data import Data
 from Bio.PDB import PDBParser
-from Bio.PDB.Polypeptide import is_aa
+from Bio.PDB.Polypeptide import is_aa, three_to_one
 import pydssp
+
+# Local imports
+try:
+    from models.embedding import get_esm_embedding
+except ImportError:
+    from .embedding import get_esm_embedding
 
 # ── Amino acid lookup ────────────────────────────────────────────────────────
 STANDARD_AA = [
@@ -235,8 +241,22 @@ def build_residue_graph(pdb_path: str, chain_id: str) -> Data:
     coord_tensor = torch.tensor(backbone).unsqueeze(0)
     ss_labels    = pydssp.assign(coord_tensor)[0]
 
-    edge_index, edge_attr, ca_coords = get_edges(residues, cutoff=GRAPH_CUTOFF)
-    x = get_node_features(residues, ss_labels, ca_coords)
+    # Build the 1-letter amino acid sequence
+    seq_str = ""
+    for r in residues:
+        try:
+            seq_str += three_to_one(r.get_resname())
+        except KeyError:
+            seq_str += "X"  # Unknown
+
+    # Get 480-dim ESM-2 embedding
+    esm_emb = get_esm_embedding(seq_str, chain_id=chain_id)  # (L, 480)
+
+    # Get 33-dim physical features
+    x_phys = get_node_features(residues, ss_labels, ca_coords)  # (L, 33)
+
+    # Concatenate: 33 + 480 = 513 dimensions
+    x = torch.cat([x_phys, esm_emb], dim=1)
 
     data               = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
     data.num_residues  = len(residues)
@@ -247,6 +267,6 @@ def build_residue_graph(pdb_path: str, chain_id: str) -> Data:
 
 if __name__ == "__main__":
     graph = build_residue_graph("1AY7.pdb", "A")
-    print("Node features:", graph.x.shape)        # expect (N, 33)
+    print("Node features:", graph.x.shape)        # expect (N, 513)
     print("Edge index:   ", graph.edge_index.shape)
     print("Edge features:", graph.edge_attr.shape) # expect (E, 5)

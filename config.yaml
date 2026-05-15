@@ -10,7 +10,7 @@ model:
   edge_feature_dim: 5
   graph_cutoff: 10.0
   hidden_dim: 256
-  input_dim: 33
+  input_dim: 513
   num_gcn_layers: 4
   num_heads: 4
   num_cross_attn_layers: 2
