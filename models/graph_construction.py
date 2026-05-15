@@ -241,6 +241,8 @@ def build_residue_graph(pdb_path: str, chain_id: str) -> Data:
     coord_tensor = torch.tensor(backbone).unsqueeze(0)
     ss_labels    = pydssp.assign(coord_tensor)[0]
 
+    edge_index, edge_attr, ca_coords = get_edges(residues, cutoff=GRAPH_CUTOFF)
+
     # Build the 1-letter amino acid sequence
     seq_str = ""
     for r in residues:
