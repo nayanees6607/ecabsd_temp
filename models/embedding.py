@@ -18,10 +18,11 @@ def load_esm_model():
     """Lazily load the ESM-2 model (35M parameters, 480-dim)."""
     global _ESM_MODEL, _ALPHABET, _BATCH_CONVERTER, _DEVICE
     if _ESM_MODEL is None:
+        import esm
         _DEVICE = torch.device("cpu")
         print(f"[ESM] Loading ESM-2 35M model onto {_DEVICE}...")
-        # esm2_t12_35M_UR50D is fast and provides strong 480-dim embeddings
-        _ESM_MODEL, _ALPHABET = torch.hub.load("facebookresearch/esm:main", "esm2_t12_35M_UR50D")
+        # Use the installed package directly for stability
+        _ESM_MODEL, _ALPHABET = esm.pretrained.esm2_t12_35M_UR50D()
         _BATCH_CONVERTER = _ALPHABET.get_batch_converter()
         _ESM_MODEL = _ESM_MODEL.to(_DEVICE)
         _ESM_MODEL.eval()
