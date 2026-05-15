@@ -26,7 +26,7 @@ import numpy as np
 import torch
 from torch_geometric.data import Data
 from Bio.PDB import PDBParser
-from Bio.PDB.Polypeptide import is_aa, three_to_one
+from Bio.PDB.Polypeptide import is_aa, protein_letters_3to1
 import pydssp
 
 # Local imports
@@ -244,10 +244,8 @@ def build_residue_graph(pdb_path: str, chain_id: str) -> Data:
     # Build the 1-letter amino acid sequence
     seq_str = ""
     for r in residues:
-        try:
-            seq_str += three_to_one(r.get_resname())
-        except KeyError:
-            seq_str += "X"  # Unknown
+        resname = r.get_resname()
+        seq_str += protein_letters_3to1.get(resname, "X")
 
     # Get 480-dim ESM-2 embedding
     esm_emb = get_esm_embedding(seq_str, chain_id=chain_id)  # (L, 480)
