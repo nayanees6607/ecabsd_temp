@@ -199,10 +199,23 @@ def train_one_epoch(model, loader, optimizer, criterion, device, gradient_clip,
                 swap_skip_count += 1
 
         optimizer.zero_grad()
-        logits, _ = model(data_a, data_b)
-        logits    = logits.squeeze(-1)
+        if getattr(model, "predict_sasa", False):
+            logits, sasa_preds, _ = model(data_a, data_b)
+            logits = logits.squeeze(-1)
+            loss_binding = criterion(logits, labels.float())
+            if hasattr(data_a, 'sasa') and data_a.sasa is not None:
+                sasa_targets = data_a.sasa.float().to(device)
+                if sasa_preds.dim() == 2 and sasa_preds.size(1) == 1:
+                    sasa_preds = sasa_preds.squeeze(-1)
+                loss_sasa = F.mse_loss(sasa_preds, sasa_targets)
+                loss = loss_binding + 0.5 * loss_sasa
+            else:
+                loss = loss_binding
+        else:
+            logits, _ = model(data_a, data_b)
+            logits = logits.squeeze(-1)
+            loss = criterion(logits, labels.float())
 
-        loss = criterion(logits, labels.float())
         loss.backward()
 
         if gradient_clip > 0:
@@ -242,10 +255,22 @@ def validate(model, loader, criterion, device):
         data_b  = sample["data_b"].to(device)   # always a Batch now
         labels  = sample["labels"].to(device)
 
-        logits, _ = model(data_a, data_b)
-        logits    = logits.squeeze(-1)
-
-        loss = criterion(logits, labels.float())
+        if getattr(model, "predict_sasa", False):
+            logits, sasa_preds, _ = model(data_a, data_b)
+            logits = logits.squeeze(-1)
+            loss_binding = criterion(logits, labels.float())
+            if hasattr(data_a, 'sasa') and data_a.sasa is not None:
+                sasa_targets = data_a.sasa.float().to(device)
+                if sasa_preds.dim() == 2 and sasa_preds.size(1) == 1:
+                    sasa_preds = sasa_preds.squeeze(-1)
+                loss_sasa = F.mse_loss(sasa_preds, sasa_targets)
+                loss = loss_binding + 0.5 * loss_sasa
+            else:
+                loss = loss_binding
+        else:
+            logits, _ = model(data_a, data_b)
+            logits = logits.squeeze(-1)
+            loss = criterion(logits, labels.float())
         total_loss += loss.item() * labels.size(0)
 
         probs = torch.sigmoid(logits)

@@ -182,10 +182,42 @@ def build_residue_graph(pdb_path: str, chain_id: str) -> Data:
 
     x = get_node_features(residues, ss_labels, ca_coords)
 
+    # Optional ESM-2 embedding support
+    import yaml
+    import os
+    use_esm = False
+    if os.path.exists("config.yaml"):
+        try:
+            with open("config.yaml", "r") as f:
+                cfg = yaml.safe_load(f)
+            use_esm = cfg.get("model", {}).get("use_esm", False)
+        except Exception:
+            pass
+
+    if use_esm:
+        try:
+            from models.embedding import get_esm_embedding
+            three_to_one_dict = {
+                'ALA': 'A', 'CYS': 'C', 'ASP': 'D', 'GLU': 'E', 'PHE': 'F',
+                'GLY': 'G', 'HIS': 'H', 'ILE': 'I', 'LYS': 'K', 'LEU': 'L',
+                'MET': 'M', 'ASN': 'N', 'PRO': 'P', 'GLN': 'Q', 'ARG': 'R',
+                'SER': 'S', 'THR': 'T', 'VAL': 'V', 'TRP': 'W', 'TYR': 'Y'
+            }
+            seq = "".join([three_to_one_dict.get(r.get_resname(), 'X') for r in residues])
+            esm_emb = get_esm_embedding(seq, chain_id=chain_id)
+            x = torch.cat([x, esm_emb], dim=-1)
+        except Exception as e:
+            print(f"[Warning] Failed to extract ESM embeddings: {e}. Falling back to 23-dim structural features.")
+
     data               = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
     data.num_residues  = len(residues)
     data.protein_len   = len(residues)
     data.chain_id      = chain_id
+    
+    # Compute relative solvent accessibility (SASA proxy)
+    sasa_scores = compute_rsa_proxy(ca_coords)
+    data.sasa = torch.tensor(sasa_scores, dtype=torch.float)
+    
     return data
 
 

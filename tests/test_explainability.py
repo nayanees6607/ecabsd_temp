@@ -66,20 +66,28 @@ def test_gnn_encoder_types():
     data_b = build_residue_graph(PDB_PATH, 'B').to(device)
 
     for gnn_type in ["gat", "transformer"]:
-        model = ECABSDModel(
-            input_dim=23,
-            hidden_dim=128,
-            num_heads=8,
-            dropout=0.0,
-            edge_dim=4,
-            gnn_type=gnn_type,
-            gnn_heads=4,
-            num_cross_attn_layers=2
-        ).to(device)
+        for predict_sasa in [True, False]:
+            model = ECABSDModel(
+                input_dim=23,
+                hidden_dim=128,
+                num_heads=8,
+                dropout=0.0,
+                edge_dim=4,
+                gnn_type=gnn_type,
+                gnn_heads=4,
+                num_cross_attn_layers=2,
+                predict_sasa=predict_sasa
+            ).to(device)
 
-        probs, labels, attn = model.predict(data_a, data_b)
-        assert probs.shape == (data_a.num_nodes, 1)
-        assert labels.shape == (data_a.num_nodes,)
-        assert len(attn) == 1
-        assert attn[0].shape == (data_a.num_nodes, data_b.num_nodes)
+            if predict_sasa:
+                logits, sasa_preds, attn = model(data_a, data_b)
+                assert logits.shape == (data_a.num_nodes, 1)
+                assert sasa_preds.shape == (data_a.num_nodes, 1)
+                assert len(attn) == 1
+            else:
+                probs, labels, attn = model.predict(data_a, data_b)
+                assert probs.shape == (data_a.num_nodes, 1)
+                assert labels.shape == (data_a.num_nodes,)
+                assert len(attn) == 1
+                assert attn[0].shape == (data_a.num_nodes, data_b.num_nodes)
 

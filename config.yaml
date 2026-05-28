@@ -18,6 +18,8 @@ model:
   residue_min: 30
   gnn_type: "gcn"  # Options: gcn, gat, transformer
   gnn_heads: 4     # Number of attention heads for GAT/Transformer encoder
+  use_esm: false   # Enable rich 960-dim pre-trained ESM-2 sequence embeddings
+  predict_sasa: false  # Jointly predict solvent accessibility to regularize interface prediction
 
 training:
   batch_size: 8

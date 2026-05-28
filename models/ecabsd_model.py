@@ -173,16 +173,24 @@ class CrossAttention(nn.Module):
 
 
 class BindingSiteClassifier(nn.Module):
-    """Two-layer per-residue classifier used by `best_model.pt`."""
+    """Two-layer per-residue classifier with optional SASA prediction head."""
 
-    def __init__(self, input_dim: int = 128, dropout: float = 0.3):
+    def __init__(self, input_dim: int = 128, dropout: float = 0.3, predict_sasa: bool = False):
         super().__init__()
+        self.predict_sasa = predict_sasa
         self.linear1 = nn.Linear(input_dim, 64)
         self.linear2 = nn.Linear(64, 1)
+        if predict_sasa:
+            self.linear_sasa = nn.Linear(64, 1)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, h):
-        return self.linear2(self.dropout(F.relu(self.linear1(h))))
+        h1 = self.dropout(F.relu(self.linear1(h)))
+        logits = self.linear2(h1)
+        if self.predict_sasa:
+            sasa_preds = torch.sigmoid(self.linear_sasa(h1))
+            return logits, sasa_preds
+        return logits
 
 
 class ECABSDModel(nn.Module):
@@ -197,6 +205,7 @@ class ECABSDModel(nn.Module):
         num_cross_attn_layers: int = None,
         gnn_type: str = None,
         gnn_heads: int = None,
+        predict_sasa: bool = None,
     ):
         super().__init__()
         # Fallback to config.yaml if any hyperparameter is unspecified
@@ -211,7 +220,11 @@ class ECABSDModel(nn.Module):
                 pass
         mcfg = cfg.get("model", {})
 
-        input_dim = input_dim if input_dim is not None else mcfg.get("input_dim", 23)
+        use_esm = mcfg.get("use_esm", False)
+        input_dim_default = 983 if use_esm else 23
+        input_dim = input_dim if input_dim is not None else mcfg.get("input_dim", input_dim_default)
+        if use_esm and input_dim == 23:
+            input_dim = 983
         hidden_dim = hidden_dim if hidden_dim is not None else mcfg.get("hidden_dim", 128)
         num_heads = num_heads if num_heads is not None else mcfg.get("num_heads", 8)
         dropout = dropout if dropout is not None else mcfg.get("dropout", 0.3)
@@ -220,7 +233,9 @@ class ECABSDModel(nn.Module):
         num_cross_attn_layers = num_cross_attn_layers if num_cross_attn_layers is not None else mcfg.get("num_cross_attn_layers", 1)
         gnn_type = gnn_type if gnn_type is not None else mcfg.get("gnn_type", "gcn")
         gnn_heads = gnn_heads if gnn_heads is not None else mcfg.get("gnn_heads", 4)
+        predict_sasa = predict_sasa if predict_sasa is not None else mcfg.get("predict_sasa", False)
 
+        self.predict_sasa = predict_sasa
         self.gnn_type = gnn_type.lower()
         if self.gnn_type == "gat":
             self.gcn_encoder = GATv2Encoder(
@@ -262,7 +277,7 @@ class ECABSDModel(nn.Module):
             for _ in range(num_cross_attn_layers)
         ])
         
-        self.classifier = BindingSiteClassifier(hidden_dim, dropout=dropout)
+        self.classifier = BindingSiteClassifier(hidden_dim, dropout=dropout, predict_sasa=predict_sasa)
 
     @property
     def cross_attention(self):
@@ -308,13 +323,21 @@ class ECABSDModel(nn.Module):
             fused.append(q.squeeze(0))
             attn_list.append(last_attn.squeeze(0))
 
-        logits = self.classifier(torch.cat(fused, dim=0))
-        return logits, attn_list
+        fused_tensor = torch.cat(fused, dim=0)
+        if self.predict_sasa:
+            logits, sasa_preds = self.classifier(fused_tensor)
+            return logits, sasa_preds, attn_list
+        else:
+            logits = self.classifier(fused_tensor)
+            return logits, attn_list
 
     def predict(self, data_a, data_b=None, threshold: float = 0.5):
         self.eval()
         with torch.no_grad():
-            logits, attn = self.forward(data_a, data_b)
+            if self.predict_sasa:
+                logits, sasa_preds, attn = self.forward(data_a, data_b)
+            else:
+                logits, attn = self.forward(data_a, data_b)
             probs = torch.sigmoid(logits)
             labels = (probs.squeeze(-1) >= threshold).long()
         return probs, labels, attn
