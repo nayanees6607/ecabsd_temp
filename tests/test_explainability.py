@@ -58,3 +58,28 @@ def test_explainability_rollout_and_gradcam():
     assert isinstance(saliency_pair, np.ndarray)
     assert len(saliency_pair) == data_a.num_residues
     gradcam_pair.remove_hooks()
+
+
+def test_gnn_encoder_types():
+    device = torch.device("cpu")
+    data_a = build_residue_graph(PDB_PATH, 'A').to(device)
+    data_b = build_residue_graph(PDB_PATH, 'B').to(device)
+
+    for gnn_type in ["gat", "transformer"]:
+        model = ECABSDModel(
+            input_dim=23,
+            hidden_dim=128,
+            num_heads=8,
+            dropout=0.0,
+            edge_dim=4,
+            gnn_type=gnn_type,
+            gnn_heads=4,
+            num_cross_attn_layers=2
+        ).to(device)
+
+        probs, labels, attn = model.predict(data_a, data_b)
+        assert probs.shape == (data_a.num_nodes, 1)
+        assert labels.shape == (data_a.num_nodes,)
+        assert len(attn) == 1
+        assert attn[0].shape == (data_a.num_nodes, data_b.num_nodes)
+

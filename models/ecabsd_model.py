@@ -1,15 +1,7 @@
-"""
-ECABSD model architecture matching the committed `checkpoints/best_model.pt`.
-
-The repository includes 23-dimensional processed residue graphs and a checkpoint
-trained with this compact GCN + cross-attention model. Keep this file aligned
-with that checkpoint so `predict.py` and `evaluate.py` work out of the box.
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv
+from torch_geometric.nn import GCNConv, GATv2Conv, TransformerConv
 from torch_geometric.utils import unbatch
 
 
@@ -32,6 +24,124 @@ class GCNEncoder(nn.Module):
         h = F.relu(self.conv3(h, edge_index))
         h = self.dropout(h)
         return F.relu(self.conv4(h, edge_index))
+
+
+class GATv2Encoder(nn.Module):
+    """Multi-layer GATv2 encoder supporting edge attributes and residual connections."""
+
+    def __init__(
+        self,
+        input_dim: int = 23,
+        hidden_dim: int = 128,
+        edge_dim: int = 4,
+        num_heads: int = 4,
+        dropout: float = 0.3,
+        num_layers: int = 4,
+    ):
+        super().__init__()
+        assert hidden_dim % num_heads == 0, f"hidden_dim ({hidden_dim}) must be divisible by num_heads ({num_heads})"
+        head_dim = hidden_dim // num_heads
+
+        self.convs = nn.ModuleList()
+        self.norms = nn.ModuleList()
+        self.dropout = nn.Dropout(dropout)
+        self.num_layers = num_layers
+
+        for i in range(num_layers):
+            in_dim = input_dim if i == 0 else hidden_dim
+            if i == num_layers - 1:
+                self.convs.append(
+                    GATv2Conv(in_dim, hidden_dim, heads=1, edge_dim=edge_dim, dropout=dropout, concat=False)
+                )
+            else:
+                self.convs.append(
+                    GATv2Conv(in_dim, head_dim, heads=num_heads, edge_dim=edge_dim, dropout=dropout, concat=True)
+                )
+                self.norms.append(nn.LayerNorm(hidden_dim))
+
+    @property
+    def conv1(self): return self.convs[0]
+    @property
+    def conv2(self): return self.convs[1]
+    @property
+    def conv3(self): return self.convs[2]
+    @property
+    def conv4(self): return self.convs[3]
+
+    def forward(self, x, edge_index, edge_attr=None):
+        h = x
+        for i, conv in enumerate(self.convs):
+            h_new = conv(h, edge_index, edge_attr)
+            if i < self.num_layers - 1:
+                h_new = F.gelu(self.norms[i](h_new))
+                if i > 0:
+                    h_new = h_new + h
+                h = self.dropout(h_new)
+            else:
+                if h.size(-1) == h_new.size(-1):
+                    h = h_new + h
+                else:
+                    h = h_new
+        return h
+
+
+class TransformerEncoder(nn.Module):
+    """Multi-layer TransformerConv encoder supporting edge attributes and residual connections."""
+
+    def __init__(
+        self,
+        input_dim: int = 23,
+        hidden_dim: int = 128,
+        edge_dim: int = 4,
+        num_heads: int = 4,
+        dropout: float = 0.3,
+        num_layers: int = 4,
+    ):
+        super().__init__()
+        assert hidden_dim % num_heads == 0, f"hidden_dim ({hidden_dim}) must be divisible by num_heads ({num_heads})"
+        head_dim = hidden_dim // num_heads
+
+        self.convs = nn.ModuleList()
+        self.norms = nn.ModuleList()
+        self.dropout = nn.Dropout(dropout)
+        self.num_layers = num_layers
+
+        for i in range(num_layers):
+            in_dim = input_dim if i == 0 else hidden_dim
+            if i == num_layers - 1:
+                self.convs.append(
+                    TransformerConv(in_dim, hidden_dim, heads=1, edge_dim=edge_dim, dropout=dropout, concat=False)
+                )
+            else:
+                self.convs.append(
+                    TransformerConv(in_dim, head_dim, heads=num_heads, edge_dim=edge_dim, dropout=dropout, concat=True)
+                )
+                self.norms.append(nn.LayerNorm(hidden_dim))
+
+    @property
+    def conv1(self): return self.convs[0]
+    @property
+    def conv2(self): return self.convs[1]
+    @property
+    def conv3(self): return self.convs[2]
+    @property
+    def conv4(self): return self.convs[3]
+
+    def forward(self, x, edge_index, edge_attr=None):
+        h = x
+        for i, conv in enumerate(self.convs):
+            h_new = conv(h, edge_index, edge_attr)
+            if i < self.num_layers - 1:
+                h_new = F.gelu(self.norms[i](h_new))
+                if i > 0:
+                    h_new = h_new + h
+                h = self.dropout(h_new)
+            else:
+                if h.size(-1) == h_new.size(-1):
+                    h = h_new + h
+                else:
+                    h = h_new
+        return h
 
 
 class SE3Refinement(nn.Module):
@@ -78,22 +188,89 @@ class BindingSiteClassifier(nn.Module):
 class ECABSDModel(nn.Module):
     def __init__(
         self,
-        input_dim: int = 23,
-        hidden_dim: int = 128,
-        num_heads: int = 8,
-        dropout: float = 0.3,
-        edge_dim: int = 4,
-        num_gcn_layers: int = 4,
-        num_cross_attn_layers: int = 1,
+        input_dim: int = None,
+        hidden_dim: int = None,
+        num_heads: int = None,
+        dropout: float = None,
+        edge_dim: int = None,
+        num_gcn_layers: int = None,
+        num_cross_attn_layers: int = None,
+        gnn_type: str = None,
+        gnn_heads: int = None,
     ):
         super().__init__()
-        self.gcn_encoder = GCNEncoder(input_dim=input_dim, hidden_dim=hidden_dim, dropout=dropout)
+        # Fallback to config.yaml if any hyperparameter is unspecified
+        import yaml
+        import os
+        cfg = {}
+        if os.path.exists("config.yaml"):
+            try:
+                with open("config.yaml", "r") as f:
+                    cfg = yaml.safe_load(f)
+            except Exception:
+                pass
+        mcfg = cfg.get("model", {})
+
+        input_dim = input_dim if input_dim is not None else mcfg.get("input_dim", 23)
+        hidden_dim = hidden_dim if hidden_dim is not None else mcfg.get("hidden_dim", 128)
+        num_heads = num_heads if num_heads is not None else mcfg.get("num_heads", 8)
+        dropout = dropout if dropout is not None else mcfg.get("dropout", 0.3)
+        edge_dim = edge_dim if edge_dim is not None else mcfg.get("edge_feature_dim", 4)
+        num_gcn_layers = num_gcn_layers if num_gcn_layers is not None else mcfg.get("num_gcn_layers", 4)
+        num_cross_attn_layers = num_cross_attn_layers if num_cross_attn_layers is not None else mcfg.get("num_cross_attn_layers", 1)
+        gnn_type = gnn_type if gnn_type is not None else mcfg.get("gnn_type", "gcn")
+        gnn_heads = gnn_heads if gnn_heads is not None else mcfg.get("gnn_heads", 4)
+
+        self.gnn_type = gnn_type.lower()
+        if self.gnn_type == "gat":
+            self.gcn_encoder = GATv2Encoder(
+                input_dim=input_dim,
+                hidden_dim=hidden_dim,
+                edge_dim=edge_dim,
+                num_heads=gnn_heads,
+                dropout=dropout,
+                num_layers=num_gcn_layers,
+            )
+        elif self.gnn_type == "transformer":
+            self.gcn_encoder = TransformerEncoder(
+                input_dim=input_dim,
+                hidden_dim=hidden_dim,
+                edge_dim=edge_dim,
+                num_heads=gnn_heads,
+                dropout=dropout,
+                num_layers=num_gcn_layers,
+            )
+        else:
+            self.gcn_encoder = GCNEncoder(
+                input_dim=input_dim,
+                hidden_dim=hidden_dim,
+                dropout=dropout,
+            )
+
         self.se3_refine = SE3Refinement(hidden_dim=hidden_dim)
-        self.cross_attention = CrossAttention(hidden_dim, num_heads=num_heads, dropout=dropout)
+        
+        self.cross_attentions = nn.ModuleList([
+            CrossAttention(hidden_dim, num_heads=num_heads, dropout=dropout)
+            for _ in range(num_cross_attn_layers)
+        ])
+        
         self.norm_a = nn.LayerNorm(hidden_dim)
         self.norm_b = nn.LayerNorm(hidden_dim)
-        self.norm_cross = nn.LayerNorm(hidden_dim)
+        
+        self.norm_crosses = nn.ModuleList([
+            nn.LayerNorm(hidden_dim)
+            for _ in range(num_cross_attn_layers)
+        ])
+        
         self.classifier = BindingSiteClassifier(hidden_dim, dropout=dropout)
+
+    @property
+    def cross_attention(self):
+        return self.cross_attentions[0]
+
+    @property
+    def norm_cross(self):
+        return self.norm_crosses[0]
 
     def encode_chain(self, data):
         h = self.gcn_encoder(data.x, data.edge_index, getattr(data, "edge_attr", None))
@@ -118,12 +295,18 @@ class ECABSDModel(nn.Module):
         attn_list = []
 
         for h_a_single, h_b_single in zip(h_a_list, h_b_list):
-            cross_out, attn = self.cross_attention(
-                h_a_single.unsqueeze(0),
-                h_b_single.unsqueeze(0),
-            )
-            fused.append(self.norm_cross(cross_out.squeeze(0)))
-            attn_list.append(attn.squeeze(0))
+            q = h_a_single.unsqueeze(0)
+            kv = h_b_single.unsqueeze(0)
+            last_attn = None
+            for layer_idx, (cross_attn, norm_cross) in enumerate(zip(self.cross_attentions, self.norm_crosses)):
+                cross_out, attn = cross_attn(q, kv)
+                if len(self.cross_attentions) == 1:
+                    q = norm_cross(cross_out)
+                else:
+                    q = norm_cross(cross_out) + q
+                last_attn = attn
+            fused.append(q.squeeze(0))
+            attn_list.append(last_attn.squeeze(0))
 
         logits = self.classifier(torch.cat(fused, dim=0))
         return logits, attn_list
