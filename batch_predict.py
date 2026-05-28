@@ -64,6 +64,39 @@ def run_batch_prediction(
     print(f"[ECABSD] Found {len(pdb_files)} PDB files in: {input_dir}")
     print(f"[ECABSD] Output directory: {output_dir}\n")
 
+    # Pre-load model and device
+    import torch
+    from models.ecabsd_model import ECABSDModel
+
+    cfg = load_config(config_path)
+    mcfg = cfg["model"]
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    model = ECABSDModel(
+        input_dim=mcfg["input_dim"],
+        hidden_dim=mcfg["hidden_dim"],
+        num_heads=mcfg["num_heads"],
+        dropout=0.0,
+        edge_dim=mcfg["edge_feature_dim"],
+    ).to(device)
+
+    cfg_threshold = cfg["prediction"].get("threshold", 0.5)
+    ckpt_threshold = cfg_threshold
+    if os.path.exists(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        ckpt_threshold = checkpoint.get("best_threshold", cfg_threshold)
+        if ckpt_threshold is None:
+            ckpt_threshold = cfg_threshold
+        print(f"[ECABSD Batch] Loaded model from: {checkpoint_path}")
+        print(f"[ECABSD Batch] Checkpoint threshold: {ckpt_threshold:.4f}")
+    else:
+        print(f"[ECABSD Batch] WARNING: No checkpoint at {checkpoint_path}. Using random weights.")
+        ckpt_threshold = cfg_threshold
+
+    if threshold is None:
+        threshold = ckpt_threshold
+
     # Process each PDB
     summary_rows = []
     errors = []
@@ -81,6 +114,8 @@ def run_batch_prediction(
                 threshold=threshold,
                 output_path=output_path,
                 config_path=config_path,
+                model=model,
+                device=device,
             )
 
             # Collect summary row

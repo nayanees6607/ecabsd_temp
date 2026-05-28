@@ -29,6 +29,8 @@ def run_prediction(
     threshold: float = None,   # if None, loaded from checkpoint
     output_path: str = None,
     config_path: str = "config.yaml",
+    model: ECABSDModel = None,
+    device: torch.device = None,
 ):
     """
     Predict binding sites for a single PDB structure.
@@ -49,38 +51,50 @@ def run_prediction(
         Path to save results JSON. If None, saves to results/ dir.
     config_path : str
         Path to config file.
+    model : ECABSDModel, optional
+        Pre-loaded model instance.
+    device : torch.device, optional
+        Pre-resolved torch device.
     """
     cfg = load_config(config_path)
     mcfg = cfg["model"]
     results_dir = cfg["paths"]["results_dir"]
     os.makedirs(results_dir, exist_ok=True)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Load model
-    model = ECABSDModel(
-        input_dim=mcfg["input_dim"],
-        hidden_dim=mcfg["hidden_dim"],
-        num_heads=mcfg["num_heads"],
-        dropout=0.0,
-        edge_dim=mcfg["edge_feature_dim"],
-    ).to(device)
+    if model is None:
+        # Load model
+        model = ECABSDModel(
+            input_dim=mcfg["input_dim"],
+            hidden_dim=mcfg["hidden_dim"],
+            num_heads=mcfg["num_heads"],
+            dropout=0.0,
+            edge_dim=mcfg["edge_feature_dim"],
+        ).to(device)
 
-    # Resolve threshold: CLI arg > checkpoint value > config value
-    cfg_threshold = cfg["prediction"].get("threshold", 0.5)
-    if os.path.exists(checkpoint_path):
-        checkpoint = torch.load(checkpoint_path, map_location=device)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        ckpt_threshold = checkpoint.get("best_threshold", cfg_threshold)
-        print(f"[ECABSD] Loaded model from: {checkpoint_path}")
-        print(f"[ECABSD] Checkpoint threshold: {ckpt_threshold:.4f}")
+        # Resolve threshold: CLI arg > checkpoint value > config value
+        cfg_threshold = cfg["prediction"].get("threshold", 0.5)
+        if os.path.exists(checkpoint_path):
+            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+            model.load_state_dict(checkpoint["model_state_dict"])
+            ckpt_threshold = checkpoint.get("best_threshold", cfg_threshold)
+            if ckpt_threshold is None:
+                ckpt_threshold = cfg_threshold
+            print(f"[ECABSD] Loaded model from: {checkpoint_path}")
+            print(f"[ECABSD] Checkpoint threshold: {ckpt_threshold:.4f}")
+        else:
+            print(f"[ECABSD] WARNING: No checkpoint at {checkpoint_path}. Using random weights.")
+            ckpt_threshold = cfg_threshold
+
+        if threshold is None:
+            threshold = ckpt_threshold
+            print(f"[ECABSD] Using threshold: {threshold:.4f}")
     else:
-        print(f"[ECABSD] WARNING: No checkpoint at {checkpoint_path}. Using random weights.")
-        ckpt_threshold = cfg_threshold
-
-    if threshold is None:
-        threshold = ckpt_threshold
-        print(f"[ECABSD] Using threshold: {threshold:.4f}")
+        if threshold is None:
+            threshold = cfg["prediction"].get("threshold", 0.5)
+            print(f"[ECABSD] Using pre-loaded model. Threshold from config: {threshold:.4f}")
 
     # Build graphs
     print(f"[ECABSD] Building graph for chain {chain_a}...")
@@ -131,7 +145,7 @@ def run_prediction(
         binding_ratio = binding_residues_count / total_residues
         if binding_ratio < 0.08:
             quality = "Too strict / too few predicted binding residues"
-        elif 0.08 <= binding_ratio <= 0.20:
+        elif 0.08 <= binding_ratio < 0.21:
             quality = "Good realistic range"
         elif 0.21 <= binding_ratio <= 0.40:
             quality = "Broad interface prediction"

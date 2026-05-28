@@ -58,7 +58,7 @@ def get_model(config_path: str = "config.yaml"):
 
         checkpoint_path = wcfg.get("checkpoint", "checkpoints/best_model.pt")
         if os.path.exists(checkpoint_path):
-            ckpt = torch.load(checkpoint_path, map_location=_device)
+            ckpt = torch.load(checkpoint_path, map_location=_device, weights_only=False)
             _model.load_state_dict(ckpt["model_state_dict"])
             print(f"[Web] Model loaded from: {checkpoint_path}")
         else:
@@ -79,9 +79,11 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
     )
 
     # CORS
+    wcfg = load_config(config_path).get("web", {})
+    allow_origins = wcfg.get("allow_origins", ["*"])
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=allow_origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -113,6 +115,16 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
             "version": "1.0.0",
         }
 
+    async def validate_pdb_file(pdb_file: UploadFile):
+        if not pdb_file.filename.lower().endswith(".pdb"):
+            raise HTTPException(status_code=400, detail="Invalid file type. Only .pdb files are accepted.")
+        MAX_SIZE = 50 * 1024 * 1024  # 50MB
+        await pdb_file.seek(0, 2)
+        file_size = await pdb_file.tell()
+        await pdb_file.seek(0)
+        if file_size > MAX_SIZE:
+            raise HTTPException(status_code=413, detail="File too large. Maximum size is 50MB.")
+
     @app.post("/predict")
     async def predict(
         pdb_file: UploadFile = File(...),
@@ -125,6 +137,7 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
 
         Returns per-residue binding probabilities.
         """
+        await validate_pdb_file(pdb_file)
         model, device, cfg = get_model()
 
         # Save uploaded PDB to temp file
@@ -193,6 +206,7 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
         """
         Get attention rollout explanation for a prediction.
         """
+        await validate_pdb_file(pdb_file)
         model, device, cfg = get_model()
 
         with tempfile.NamedTemporaryFile(suffix=".pdb", delete=False) as tmp:
@@ -230,4 +244,4 @@ app = create_app()
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)

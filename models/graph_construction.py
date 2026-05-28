@@ -132,26 +132,29 @@ def get_edges(residues, cutoff: float = GRAPH_CUTOFF):
             ca_coords.append(np.array([0.0, 0.0, 0.0]))
     ca_coords = np.array(ca_coords)
 
-    edge_src, edge_dst, edge_features = [], [], []
     n = len(residues)
+    if n == 0:
+        return torch.empty((2, 0), dtype=torch.long), torch.empty((0, 4), dtype=torch.float), ca_coords
 
-    for i in range(n):
-        for j in range(n):
-            if i == j:
-                continue
-            diff = ca_coords[j] - ca_coords[i]
-            dist = float(np.linalg.norm(diff))
-            if dist > cutoff:
-                continue
-            if dist == 0:
-                dist = 1e-8
-            unit_vec = diff / dist
-            norm_dist = min(dist / cutoff, 1.0)
-
-            edge_src.append(i)
-            edge_dst.append(j)
-            edge_features.append([norm_dist] + unit_vec.tolist())
-
+    from scipy.spatial.distance import cdist
+    dists = cdist(ca_coords, ca_coords)
+    src_idx, dst_idx = np.where((dists <= cutoff) & (~np.eye(n, dtype=bool)))
+    
+    edge_src = src_idx.tolist()
+    edge_dst = dst_idx.tolist()
+    
+    diffs = ca_coords[dst_idx] - ca_coords[src_idx]
+    actual_dists = dists[src_idx, dst_idx]
+    
+    # Avoid division by zero
+    zero_dist_mask = actual_dists == 0
+    actual_dists[zero_dist_mask] = 1e-8
+    
+    unit_vecs = diffs / actual_dists[:, np.newaxis]
+    norm_dists = np.minimum(actual_dists / cutoff, 1.0)
+    
+    edge_features = np.column_stack([norm_dists, unit_vecs])
+    
     edge_index = torch.tensor([edge_src, edge_dst], dtype=torch.long)
     edge_attr  = torch.tensor(edge_features, dtype=torch.float)
     return edge_index, edge_attr, ca_coords

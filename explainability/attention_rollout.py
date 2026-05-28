@@ -79,7 +79,10 @@ class AttentionRollout:
         with torch.no_grad():
             _, attn_weights = self.model(data_a, data_b)
 
-        attn_matrix = attn_weights.cpu().numpy()  # (N_a, N_b)
+        if isinstance(attn_weights, list):
+            attn_matrix = attn_weights[0].cpu().numpy()  # (N_a, N_b)
+        else:
+            attn_matrix = attn_weights.cpu().numpy()  # (N_a, N_b)
 
         # Per-residue score: sum of attention weights received from all partner residues
         # i.e., how much each chain A residue attends to chain B overall

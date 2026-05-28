@@ -48,8 +48,8 @@ class GradCAM:
         self.model = model
         self.target_layer = target_layer
 
-        self._activations = None
-        self._gradients = None
+        self._activations_list = []
+        self._gradients_list = []
 
         # Select target layer
         gcn = self.model.gcn_encoder
@@ -66,11 +66,11 @@ class GradCAM:
 
     def _fwd_hook_fn(self, module, input, output):
         """Capture forward activations."""
-        self._activations = output.detach()
+        self._activations_list.append(output.detach())
 
     def _bwd_hook_fn(self, module, grad_input, grad_output):
         """Capture backward gradients."""
-        self._gradients = grad_output[0].detach()
+        self._gradients_list.append(grad_output[0].detach())
 
     def remove_hooks(self):
         """Remove all hooks."""
@@ -97,6 +97,10 @@ class GradCAM:
             Per-residue saliency scores, shape (N_a,), normalized to [0, 1].
         """
         self.model.eval()
+        
+        # Reset lists for this run
+        self._activations_list = []
+        self._gradients_list = []
 
         # Requires gradient computation
         data_a.x.requires_grad_(True)
@@ -115,10 +119,10 @@ class GradCAM:
         self.model.zero_grad()
         score.backward()
 
-        # Activations: (N, hidden_dim)
-        activations = self._activations.cpu().numpy()
-        # Gradients: (N, hidden_dim)
-        gradients = self._gradients.cpu().numpy()
+        # Activations: the first forward call corresponds to chain A
+        activations = self._activations_list[0].cpu().numpy()
+        # Gradients: the last backward call corresponds to chain A
+        gradients = self._gradients_list[-1].cpu().numpy()
 
         # Global average pooling of gradients → importance weights per channel
         alpha = gradients.mean(axis=0)  # (hidden_dim,)

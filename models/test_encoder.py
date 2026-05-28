@@ -1,9 +1,13 @@
-import torch
-from encoder import Encoder
-from graph_construction import build_residue_graph
+import os
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from models.encoder import Encoder
+from models.graph_construction import build_residue_graph
 
 # Load graph
-data = build_residue_graph(r"C:\Users\vitta\ecabsd\1AY7.pdb", "A")
+pdb_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "1AY7.pdb"))
+data = build_residue_graph(pdb_path, "A")
 
 # Initialize model
 model = Encoder()

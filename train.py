@@ -353,18 +353,28 @@ def run_training(config_path: str = "config.yaml", resume_from: str = None):
     # Resume
     start_epoch   = 0
     best_val_loss = float("inf")
+    best_val_f1   = -1.0
+    best_threshold = 0.5
     if resume_from and os.path.exists(resume_from):
-        ckpt = torch.load(resume_from, map_location=device)
+        ckpt = torch.load(resume_from, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model_state_dict"])
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         start_epoch   = ckpt.get("epoch", 0) + 1
         best_val_loss = ckpt.get("best_val_loss", float("inf"))
+        
+        saved_f1 = ckpt.get("best_val_f1")
+        if saved_f1 is not None:
+            best_val_f1 = saved_f1
+            
+        saved_thr = ckpt.get("best_threshold")
+        if saved_thr is not None:
+            best_threshold = saved_thr
+            
         print(f"[ECABSD] Resumed from epoch {start_epoch}")
+        print(f"[ECABSD] Resumed best val F1: {best_val_f1:.4f} (threshold: {best_threshold:.4f})")
 
     # Loop
     patience_counter = 0
-    best_val_f1      = -1.0
-    best_threshold   = 0.5
     history          = []
 
     print(f"\n{'='*60}")
