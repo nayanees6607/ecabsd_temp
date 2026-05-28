@@ -77,7 +77,7 @@ def run_evaluation(config_path: str = "config.yaml", checkpoint_path: str = "che
         num_heads=mcfg["num_heads"],
         dropout=0.0,  # No dropout during evaluation
         edge_dim=mcfg["edge_feature_dim"],
-        num_cross_attn_layers=mcfg.get("num_cross_attn_layers", 2),
+        num_cross_attn_layers=mcfg.get("num_cross_attn_layers", 1),
         num_gcn_layers=mcfg.get("num_gcn_layers", 4),
     ).to(device)
 

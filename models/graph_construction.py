@@ -1,39 +1,21 @@
 """
 Graph construction for ECABSD.
 
-Node features (33-dim):
+Node features (23-dim):
     0-19  : amino acid one-hot (20)
     20-22 : secondary structure one-hot — helix/sheet/coil (3)
-    23    : Kyte-Doolittle hydrophobicity (normalised)
-    24    : formal charge at pH 7
-    25    : relative sequence position 0→1
-    26    : relative solvent accessibility proxy (neighbour count, normalised)
-    27    : B-factor (normalised by chain mean)
-    28    : sin(2π·i/L) — sinusoidal positional encoding
-    29    : cos(2π·i/L) — sinusoidal positional encoding
-    30    : is N-terminal region (first 10% of chain)
-    31    : is C-terminal region (last 10% of chain)
-    32    : side-chain size proxy (normalised MW)
 
-Edge features (5-dim):
+Edge features (4-dim):
     0   : Euclidean Cα–Cα distance (Å, normalised by cutoff)
     1-3 : unit direction vector
-    4   : edge type (0 = spatial, 1 = sequential i±1, 2 = sequential i±2)
 """
 
-import math
 import numpy as np
 import torch
 from torch_geometric.data import Data
 from Bio.PDB import PDBParser
-from Bio.PDB.Polypeptide import is_aa, protein_letters_3to1
+from Bio.PDB.Polypeptide import is_aa
 import pydssp
-
-# Local imports
-try:
-    from models.embedding import get_esm_embedding
-except ImportError:
-    from .embedding import get_esm_embedding
 
 # ── Amino acid lookup ────────────────────────────────────────────────────────
 STANDARD_AA = [
@@ -70,7 +52,7 @@ _MW = {
 }
 SC_MW = {aa: v / 130.0 for aa, v in _MW.items()}
 
-GRAPH_CUTOFF = 10.0  # Å — increased from 8 for better long-range context
+GRAPH_CUTOFF = 8.0
 
 
 def get_residues(chain):
@@ -116,21 +98,7 @@ def compute_rsa_proxy(ca_coords, cutoff=8.0):
 
 
 def get_node_features(residues, ss_labels, ca_coords) -> torch.Tensor:
-    """Build 33-dim per-residue node feature vectors."""
-    n = len(residues)
-    rsa = compute_rsa_proxy(ca_coords)
-
-    # B-factor: normalise within chain
-    bfactors = []
-    for r in residues:
-        try:
-            bfactors.append(r['CA'].get_bfactor())
-        except KeyError:
-            bfactors.append(0.0)
-    bfactors = np.array(bfactors, dtype=np.float32)
-    bf_mean = bfactors.mean() if bfactors.mean() != 0 else 1.0
-    bf_norm = np.clip(bfactors / (bf_mean + 1e-8), 0, 3) / 3.0  # [0, 1]
-
+    """Build 23-dim per-residue node feature vectors."""
     features = []
     for i, r in enumerate(residues):
         resname = r.get_resname()
@@ -143,37 +111,18 @@ def get_node_features(residues, ss_labels, ca_coords) -> torch.Tensor:
         # 3-dim secondary structure
         ss = SS_MAPPING.get(str(ss_labels[i]), [0, 0, 1])
 
-        # Scalar features
-        hydro    = HYDROPHOBICITY.get(resname, 0.0)
-        charge   = float(CHARGE.get(resname, 0.0))
-        rel_pos  = i / max(n - 1, 1)
-        rsa_val  = float(rsa[i])
-        bf_val   = float(bf_norm[i])
-        sin_pos  = math.sin(2 * math.pi * i / max(n, 1))
-        cos_pos  = math.cos(2 * math.pi * i / max(n, 1))
-        n_term   = 1.0 if i < max(n * 0.10, 1) else 0.0
-        c_term   = 1.0 if i >= n - max(n * 0.10, 1) else 0.0
-        sc_mw    = SC_MW.get(resname, 0.0)
-
-        features.append(
-            one_hot + ss +
-            [hydro, charge, rel_pos, rsa_val, bf_val,
-             sin_pos, cos_pos, n_term, c_term, sc_mw]
-        )
+        features.append(one_hot + ss)
 
     return torch.tensor(features, dtype=torch.float)
 
 
 def get_edges(residues, cutoff: float = GRAPH_CUTOFF):
     """
-    Build enriched edge set:
-      - Spatial edges: Cα–Cα distance ≤ cutoff
-      - Sequential edges: |i - j| ≤ 2 (always included)
+    Build spatial Cα-Cα edges within cutoff.
 
-    Edge features (5-dim):
+    Edge features (4-dim):
       0   : normalised distance
       1-3 : unit direction vector
-      4   : edge type (0=spatial, 1=seq±1, 2=seq±2)
     """
     ca_coords = []
     for r in residues:
@@ -186,37 +135,22 @@ def get_edges(residues, cutoff: float = GRAPH_CUTOFF):
     edge_src, edge_dst, edge_features = [], [], []
     n = len(residues)
 
-    # Build set of sequential edges first so we can type them
-    seq_edges = set()
-    for i in range(n):
-        for delta in [-2, -1, 1, 2]:
-            j = i + delta
-            if 0 <= j < n:
-                seq_edges.add((i, j))
-
-    # Spatial edges
     for i in range(n):
         for j in range(n):
             if i == j:
                 continue
             diff = ca_coords[j] - ca_coords[i]
             dist = float(np.linalg.norm(diff))
-            if dist > cutoff and (i, j) not in seq_edges:
-                continue  # skip far, non-sequential pairs
-            # include if within cutoff OR is sequential
+            if dist > cutoff:
+                continue
             if dist == 0:
                 dist = 1e-8
             unit_vec = diff / dist
             norm_dist = min(dist / cutoff, 1.0)
 
-            if (i, j) in seq_edges:
-                edge_type = 1.0 if abs(i - j) == 1 else 2.0
-            else:
-                edge_type = 0.0
-
             edge_src.append(i)
             edge_dst.append(j)
-            edge_features.append([norm_dist] + unit_vec.tolist() + [edge_type])
+            edge_features.append([norm_dist] + unit_vec.tolist())
 
     edge_index = torch.tensor([edge_src, edge_dst], dtype=torch.long)
     edge_attr  = torch.tensor(edge_features, dtype=torch.float)
@@ -243,20 +177,7 @@ def build_residue_graph(pdb_path: str, chain_id: str) -> Data:
 
     edge_index, edge_attr, ca_coords = get_edges(residues, cutoff=GRAPH_CUTOFF)
 
-    # Build the 1-letter amino acid sequence
-    seq_str = ""
-    for r in residues:
-        resname = r.get_resname()
-        seq_str += protein_letters_3to1.get(resname, "X")
-
-    # Get 480-dim ESM-2 embedding
-    esm_emb = get_esm_embedding(seq_str, chain_id=chain_id)  # (L, 480)
-
-    # Get 33-dim physical features
-    x_phys = get_node_features(residues, ss_labels, ca_coords)  # (L, 33)
-
-    # Concatenate: 33 + 480 = 513 dimensions
-    x = torch.cat([x_phys, esm_emb], dim=1)
+    x = get_node_features(residues, ss_labels, ca_coords)
 
     data               = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
     data.num_residues  = len(residues)
@@ -267,6 +188,6 @@ def build_residue_graph(pdb_path: str, chain_id: str) -> Data:
 
 if __name__ == "__main__":
     graph = build_residue_graph("1AY7.pdb", "A")
-    print("Node features:", graph.x.shape)        # expect (N, 513)
+    print("Node features:", graph.x.shape)        # expect (N, 23)
     print("Edge index:   ", graph.edge_index.shape)
-    print("Edge features:", graph.edge_attr.shape) # expect (E, 5)
+    print("Edge features:", graph.edge_attr.shape) # expect (E, 4)

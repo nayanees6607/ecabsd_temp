@@ -1,19 +1,19 @@
 data:
   ligand_distance_cutoff: 4.5
   pdb_dir: data/raw/pdbs
-  processed_dir: data/db5_processed
+  processed_dir: data/processed
   raw_dir: data/raw
-  splits_csv: data/db5_splits.csv
+  splits_csv: data/splits.csv
 
 model:
-  dropout: 0.4
-  edge_feature_dim: 5
-  graph_cutoff: 10.0
-  hidden_dim: 256
-  input_dim: 993
+  dropout: 0.3
+  edge_feature_dim: 4
+  graph_cutoff: 8.0
+  hidden_dim: 128
+  input_dim: 23
   num_gcn_layers: 4
   num_heads: 8
-  num_cross_attn_layers: 4
+  num_cross_attn_layers: 1
   residue_max: 800
   residue_min: 30
 

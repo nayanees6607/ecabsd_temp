@@ -178,18 +178,25 @@ def train_one_epoch(model, loader, optimizer, criterion, device, gradient_clip,
     model.train()
     total_loss = 0.0
     all_labels, all_preds = [], []
+    swap_skip_count = 0
+    missing_partner_batches = 0
 
     for sample in loader:
         data_a  = sample["data_a"].to(device)
         data_b  = sample["data_b"].to(device)
         labels  = sample["labels"].to(device)
+        partner_missing = any(sample.get("partner_missing", []))
 
         # Chain-swap augmentation: swap A and B, use B's labels as target
         if chain_swap_prob > 0 and random.random() < chain_swap_prob:
-            # data_b.y holds binding labels for chain B (set by prepare_db5.py)
-            if hasattr(data_b, 'y') and data_b.y is not None:
+            if partner_missing:
+                swap_skip_count += 1
+                missing_partner_batches += 1
+            elif hasattr(data_b, 'y') and data_b.y is not None:
                 data_a, data_b = data_b, data_a
                 labels = data_a.y.float().to(device)
+            else:
+                swap_skip_count += 1
 
         optimizer.zero_grad()
         logits, _ = model(data_a, data_b)
@@ -208,6 +215,14 @@ def train_one_epoch(model, loader, optimizer, criterion, device, gradient_clip,
         binary_preds = (probs >= 0.5).long().cpu().numpy()
         all_labels.extend(labels.cpu().numpy().tolist())
         all_preds.extend(binary_preds.tolist())
+
+    if swap_skip_count > 0:
+        print(f"  [chain-swap] WARNING: {swap_skip_count} batch(es) skipped "
+              f"chain-swap augmentation because chain-B labels or partner "
+              f"graphs were unavailable.")
+    if missing_partner_batches > 0:
+        print(f"  [chain-swap] WARNING: {missing_partner_batches} batch(es) used "
+              f"self-attention fallback and were excluded from chain-swap augmentation.")
 
     avg_loss        = total_loss / max(len(all_labels), 1)
     metrics         = compute_metrics(all_labels, all_preds)
@@ -281,7 +296,7 @@ def run_training(config_path: str = "config.yaml", resume_from: str = None):
         num_heads=mcfg["num_heads"],
         dropout=mcfg["dropout"],
         edge_dim=mcfg["edge_feature_dim"],
-        num_cross_attn_layers=mcfg.get("num_cross_attn_layers", 2),
+        num_cross_attn_layers=mcfg.get("num_cross_attn_layers", 1),
         num_gcn_layers=mcfg.get("num_gcn_layers", 4),
     ).to(device)
 

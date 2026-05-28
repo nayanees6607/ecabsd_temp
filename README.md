@@ -31,12 +31,12 @@
 
 ## Overview
 
-ECABSD predicts which residues in a protein chain form the binding interface with another protein. It uses:
+ECABSD predicts which residues in a target protein chain form the binding interface with a partner protein chain. The included processed graphs and checkpoint use:
 
 1. **Graph Construction** — each protein chain becomes a residue graph with 8 Å distance cutoff edges
-2. **GCN Encoder** — 4-layer Graph Convolutional Network (23 → 128 features)
-3. **SE(3) Refinement** — equivariant feature refinement block
-4. **Cross-Attention** — 8-head multi-head attention between two protein chains
+2. **GCN Encoder** — 4-layer graph convolution stack (23 → 128 features)
+3. **SE(3)-inspired Refinement** — lightweight learned feature refinement block
+4. **Target-to-partner Cross-Attention** — 8-head attention from target chain A to partner chain B
 5. **Per-residue Classifier** — 2-layer MLP with sigmoid for binding probability
 
 ---
@@ -44,9 +44,9 @@ ECABSD predicts which residues in a protein chain form the binding interface wit
 ## Architecture
 
 ```
-Protein A  ─→ [Graph Construction] ─→ [GCN × 4] ─→ [SE3 Refine] ─┐
-                                                                     ├─→ CrossAttention (8 heads) ─→ Classifier ─→ P(binding) per residue
-Protein B  ─→ [Graph Construction] ─→ [GCN × 4] ─→ [SE3 Refine] ─┘
+Protein A (target)  ─→ [Graph Construction] ─→ [GCN × 4] ─→ [SE3-inspired Refine] ─┐
+                                                                                    ├─→ A→B CrossAttention (8 heads) ─→ Classifier ─→ P(binding) per target residue
+Protein B (partner) ─→ [Graph Construction] ─→ [GCN × 4] ─→ [SE3-inspired Refine] ─┘
 ```
 
 **Node features (23-dim):** 20-dim amino acid one-hot + 3-dim secondary structure (helix/sheet/coil)  
@@ -59,7 +59,7 @@ Protein B  ─→ [Graph Construction] ─→ [GCN × 4] ─→ [SE3 Refine] ─
 
 ```bash
 # Clone repository
-git clone https://github.com/VigneshReddyKura/ecabsd.git
+git clone https://github.com/nayanees6607/ecabsd_temp.git
 cd ecabsd
 
 # Create environment
@@ -182,12 +182,12 @@ Training config is in `config.yaml`. Key parameters:
 | `hidden_dim` | 128 | Model hidden dimension |
 | `num_heads` | 8 | Cross-attention heads |
 | `graph_cutoff` | 8.0 Å | Edge distance cutoff |
-| `epochs` | 100 | Max training epochs |
-| `learning_rate` | 0.001 | Adam LR |
-| `pos_weight` | 5.0 | BCE class weight for binding sites |
-| `early_stopping_patience` | 15 | Epochs to wait before stopping |
+| `epochs` | 200 | Max training epochs |
+| `learning_rate` | 0.0003 | Adam LR |
+| `chain_swap_prob` | 0.5 | Probability of valid chain-swap augmentation |
+| `early_stopping_patience` | 60 | Epochs to wait before stopping |
 
-Checkpoints saved to `checkpoints/`, logs to `logs/training_history.json`.
+The included checkpoint is `checkpoints/best_model.pt`. New training runs save the best checkpoint to the same path and logs to `logs/training_history.json`.
 
 ---
 
@@ -200,6 +200,27 @@ python main.py evaluate --checkpoint checkpoints/best_model.pt
 Outputs:
 - `results/metrics.json` — Accuracy, Precision, Recall, F1, MCC, AUC-ROC, AUC-PR
 - `results/confusion_matrix.png` — Confusion matrix plot
+
+Current verified evaluation after exact PDB-ID de-leakage:
+
+| Metric | Score |
+|---|---:|
+| Accuracy | `0.8318` |
+| Precision | `0.1403` |
+| Recall | `0.0132` |
+| F1 Score | `0.0241` |
+| MCC | `-0.0058` |
+| ROC-AUC | `0.4736` |
+| PR-AUC | `0.1545` |
+| Threshold | `0.5000` |
+
+Before using benchmark numbers in a publication, run the leakage checks:
+
+```bash
+python check_leakage.py --mmseqs
+```
+
+Tier 1 checks exact PDB-ID overlap. Tier 2 requires MMseqs2 and checks sequence-similarity leakage at 30% identity.
 
 ### Benchmark vs. Baselines
 
@@ -279,15 +300,16 @@ ecabsd/
 ├── evaluate.py                 # Evaluation pipeline
 ├── predict.py                  # Single-structure prediction
 ├── batch_predict.py            # Batch prediction
+├── check_leakage.py            # Split leakage checks
 │
 ├── models/
 │   ├── __init__.py
 │   ├── ecabsd_model.py         # End-to-end model
-│   ├── encoder.py              # GCN + SE3 chain encoder
-│   ├── gcn_model.py            # 4-layer GCNConv encoder
-│   ├── se3_model.py            # SE(3) refinement block
-│   ├── cross_attention.py      # Multi-head cross-attention
-│   ├── classifier.py           # Per-residue MLP classifier
+│   ├── encoder.py              # Experimental encoder components
+│   ├── gcn_model.py            # Experimental GATv2 encoder
+│   ├── se3_model.py            # Experimental SE(3)-inspired block
+│   ├── cross_attention.py      # Experimental bidirectional cross-attention
+│   ├── classifier.py           # Experimental deep classifier
 │   └── graph_construction.py  # PDB → residue graph
 │
 ├── data/
@@ -324,9 +346,6 @@ ecabsd/
 │   └── static/
 │       ├── style.css           # Dark-mode CSS
 │       └── app.js              # Frontend JavaScript
-│
-├── notebooks/
-│   └── quickstart_1AY7.ipynb  # Quickstart Jupyter notebook
 │
 ├── tests/
 │   └── test_graph_construction.py

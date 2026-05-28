@@ -74,6 +74,7 @@ class BindingSiteDataset(Dataset):
             "data_b":  data_b,
             "labels":  labels,
             "pdb_id":  s["pdb_id"],
+            "partner_missing": data_b is None,
         }
 
 
@@ -84,9 +85,10 @@ def collate_fn(batch):
     Uses PyG Batch.from_data_list to correctly batch variable-size graphs.
     Labels are concatenated to match the flattened node order in the batch.
 
-    Note: data_b can be None if partner chain wasn't available.
-    We collate only the non-None data_b items and fall back to self-attention
-    (data_b = data_a) for those where the partner is missing.
+    Note: data_b can be None if the partner chain was not available.
+    We fall back to self-attention for those rows so inference can still run,
+    and return partner_missing flags so training can avoid treating fallback
+    partners as true chain-swap augmentation.
     """
     data_a_list  = [s["data_a"]  for s in batch]
     labels_list  = [s["labels"]  for s in batch]
@@ -103,4 +105,5 @@ def collate_fn(batch):
         "data_b":  batch_b,
         "labels":  labels,
         "pdb_id":  [s["pdb_id"] for s in batch],
+        "partner_missing": [s["partner_missing"] for s in batch],
     }
