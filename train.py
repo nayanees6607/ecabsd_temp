@@ -42,7 +42,7 @@ from data.dataset import BindingSiteDataset, collate_fn
 class FocalLoss(nn.Module):
     """Binary Focal Loss — suppresses easy negatives."""
 
-    def __init__(self, alpha: float = 0.90, gamma: float = 2.0):
+    def __init__(self, alpha: float = 0.65, gamma: float = 3.0):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma

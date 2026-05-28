@@ -26,14 +26,12 @@ training:
   chain_swap_prob: 0.5
   early_stopping_patience: 60
   epochs: 200
-  focal_alpha: 0.75
+  focal_alpha: 0.65
   focal_gamma: 3.0
+  dice_weight: 0.4
   gradient_clip: 0.5
-  label_smoothing: 0.05
   learning_rate: 0.0003
   loss: combined
-  lr_factor: 0.5
-  lr_patience: 15
   lr_scheduler: cosine_warmup
   num_workers: 0
   seed: 42

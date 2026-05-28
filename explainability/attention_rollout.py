@@ -4,11 +4,15 @@ ECABSD Attention Rollout — Explainability via cross-attention weights.
 Extracts and visualizes per-residue importance scores from the
 CrossAttention layer using attention rollout.
 
+For ECABSD the cross-attention is a stack of CrossEncoder layers. We capture
+the attention weights from the first layer's CrossFusion sub-module using a
+forward hook — this is the clearest spatial signal before deep stacking.
+
 Usage:
     from explainability.attention_rollout import AttentionRollout
     rollout = AttentionRollout(model)
     scores = rollout.compute(data_a, data_b)
-    rollout.plot(scores, residue_ids)
+    rollout.plot_heatmap(scores, residue_ids)
 """
 
 import os
@@ -25,9 +29,9 @@ class AttentionRollout:
     """
     Computes per-residue importance scores from cross-attention weights.
 
-    For ECABSD the cross-attention is a single layer, so rollout reduces
-    to simply using the raw attention weights. When multiple attention
-    heads are present, we average (or max) across heads.
+    Hooks into the first CrossFusion layer of the CrossAttention stack to
+    capture raw attention weights (chain A attending to chain B).
+    When multiple heads are present, they are fused by `head_fusion`.
 
     Parameters
     ----------
@@ -38,23 +42,24 @@ class AttentionRollout:
     """
 
     def __init__(self, model: ECABSDModel, head_fusion: str = "mean"):
-        self.model = model
-        self.head_fusion = head_fusion
-        self._attention_map = None
+        self.model        = model
+        self.head_fusion  = head_fusion
+        self._attn_a      = None  # will hold (1, H, N_a, N_b) after hook fires
 
-        # Register forward hook on cross-attention layer
-        self._hook = model.cross_attention.attention.register_forward_hook(
-            self._hook_fn
-        )
+        # Hook into the CrossFusion module inside the first CrossEncoder layer.
+        # CrossFusion.forward() returns ((ctx_a, ctx_b), (attn_a, attn_b)).
+        # We capture attn_a (chain A attending to chain B) via the output hook.
+        first_fusion = model.cross_attention.layers[0].fusion
+        self._hook = first_fusion.register_forward_hook(self._hook_fn)
 
     def _hook_fn(self, module, input, output):
-        """Capture attention weights from MultiheadAttention."""
-        # output is (attn_output, attn_weights)
-        if isinstance(output, tuple) and len(output) == 2:
-            self._attention_map = output[1].detach().cpu()
+        """Capture chain-A attention weights from CrossFusion output."""
+        # CrossFusion.forward returns: ((ctx_a, ctx_b), (attn_a, attn_b))
+        _, (attn_a, _) = output
+        self._attn_a = attn_a.detach().cpu()   # (1, H, N_a, N_b)
 
     def remove_hook(self):
-        """Remove the forward hook."""
+        """Remove the forward hook to avoid memory leaks."""
         self._hook.remove()
 
     def compute(self, data_a, data_b=None):
@@ -66,37 +71,53 @@ class AttentionRollout:
         data_a : torch_geometric.data.Data
             Graph for chain A.
         data_b : torch_geometric.data.Data, optional
-            Graph for chain B.
+            Graph for chain B. If None, chain A attends to itself.
 
         Returns
         -------
         scores : np.ndarray
-            Per-residue importance scores for chain A, shape (N_a,).
+            Per-residue importance scores for chain A, shape (N_a,),
+            normalized to [0, 1].
         attn_matrix : np.ndarray
-            Full attention matrix, shape (N_a, N_b).
+            Head-fused attention matrix, shape (N_a, N_b).
         """
         self.model.eval()
+        self._attn_a = None
         with torch.no_grad():
-            _, attn_weights = self.model(data_a, data_b)
+            self.model(data_a, data_b)  # forward pass — hook captures attention
 
-        if isinstance(attn_weights, list):
-            attn_matrix = attn_weights[0].cpu().numpy()  # (N_a, N_b)
+        if self._attn_a is None:
+            raise RuntimeError(
+                "AttentionRollout hook did not fire. "
+                "Ensure model has at least one CrossEncoder layer."
+            )
+
+        # self._attn_a shape: (1, H, N_a, N_b)
+        attn = self._attn_a.squeeze(0)   # (H, N_a, N_b)
+
+        # Fuse heads
+        if self.head_fusion == "mean":
+            attn_matrix = attn.mean(dim=0).numpy()    # (N_a, N_b)
+        elif self.head_fusion == "max":
+            attn_matrix = attn.max(dim=0).values.numpy()
+        elif self.head_fusion == "min":
+            attn_matrix = attn.min(dim=0).values.numpy()
         else:
-            attn_matrix = attn_weights.cpu().numpy()  # (N_a, N_b)
+            raise ValueError(f"Unknown head_fusion: '{self.head_fusion}'. Use 'mean', 'max', or 'min'.")
 
-        # Per-residue score: sum of attention weights received from all partner residues
-        # i.e., how much each chain A residue attends to chain B overall
-        scores = attn_matrix.sum(axis=1)  # (N_a,)
+        # Per-residue score: how much each chain-A residue attends to chain B overall
+        scores = attn_matrix.sum(axis=1)   # (N_a,)
 
         # Normalize to [0, 1]
-        if scores.max() > scores.min():
-            scores = (scores - scores.min()) / (scores.max() - scores.min())
+        s_min, s_max = scores.min(), scores.max()
+        if s_max > s_min:
+            scores = (scores - s_min) / (s_max - s_min)
 
         return scores, attn_matrix
 
     def plot_heatmap(self, scores, residue_labels=None, output_path=None, title="Attention Rollout"):
         """
-        Plot per-residue attention importance as a heatmap.
+        Plot per-residue attention importance as a bar chart.
 
         Parameters
         ----------
@@ -105,7 +126,7 @@ class AttentionRollout:
         residue_labels : list, optional
             Residue labels for the x-axis (e.g., ['ALA1', 'GLY2', ...]).
         output_path : str, optional
-            Path to save the figure.
+            Path to save the figure. If None, calls plt.show().
         title : str
             Plot title.
         """
@@ -117,7 +138,7 @@ class AttentionRollout:
             fig, ax = plt.subplots(figsize=(max(12, len(scores) // 5), 3))
 
             bar_colors = plt.cm.RdYlGn_r(scores)
-            bars = ax.bar(range(len(scores)), scores, color=bar_colors, width=1.0)
+            ax.bar(range(len(scores)), scores, color=bar_colors, width=1.0)
 
             ax.set_xlabel("Residue Index", fontsize=12)
             ax.set_ylabel("Attention Score (normalized)", fontsize=12)
@@ -155,7 +176,7 @@ class AttentionRollout:
         attn_matrix : np.ndarray
             Attention matrix, shape (N_a, N_b).
         output_path : str, optional
-            Path to save the figure.
+            Path to save the figure. If None, calls plt.show().
         """
         try:
             import matplotlib
@@ -200,16 +221,21 @@ def explain_prediction(
     data_b : torch_geometric.data.Data, optional
         Chain B graph.
     residues_a : list, optional
-        List of Bio.PDB residue objects for labels.
+        List of Bio.PDB residue objects for axis labels.
     output_dir : str
         Directory to save plots.
+
+    Returns
+    -------
+    scores : np.ndarray, shape (N_a,)
+    attn_matrix : np.ndarray, shape (N_a, N_b)
     """
     os.makedirs(output_dir, exist_ok=True)
 
     rollout = AttentionRollout(model)
     scores, attn_matrix = rollout.compute(data_a, data_b)
 
-    # Build residue labels
+    # Build residue labels for axis ticks
     labels = None
     if residues_a:
         labels = [f"{r.get_resname()}{r.get_id()[1]}" for r in residues_a]

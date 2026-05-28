@@ -1,9 +1,17 @@
 """
 ESM-2 Embedding Extraction Module.
 
-Uses the ESM-2 35M parameter model to extract rich evolutionary and 
-structural features (480-dim) for each residue in a protein sequence.
-These embeddings are crucial for detecting binding interfaces.
+Uses the ESM-2 35M parameter model (esm2_t12_35M_UR50D) to extract rich
+evolutionary and structural features for each residue in a protein sequence.
+
+Dimensions:
+  Each layer produces 480-dim per-residue representations.
+  Layers 6 and 12 are extracted and concatenated → 960-dim per residue.
+  These 960-dim embeddings are then concatenated with the 23-dim DSSP structural
+  features to produce the full 983-dim node feature vector.
+
+These pre-trained embeddings capture evolutionary conservation, which is
+critical for binding site detection since interface residues are highly conserved.
 """
 
 import torch
@@ -58,8 +66,8 @@ def get_esm_embedding(sequence: str, chain_id: str = "A") -> torch.Tensor:
     return embedding.cpu()
 
 if __name__ == "__main__":
-    # Test
+    # Test — verifies that the embedding shape is (seq_len, 960)
     seq = "MKVTIKVTEG"
     emb = get_esm_embedding(seq)
     print(f"Sequence: {seq}")
-    print(f"Embedding shape: {emb.shape} (Expected: 10, 480)")
+    print(f"Embedding shape: {emb.shape} (Expected: ({len(seq)}, 960))")

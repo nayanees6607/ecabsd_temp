@@ -71,11 +71,12 @@ def run_evaluation(config_path: str = "config.yaml", checkpoint_path: str = "che
     print(f"[ECABSD] Evaluating on device: {device}")
 
     # Load model — must match training architecture exactly
+    # Use the training dropout value; model.eval() disables it during evaluation
     model = ECABSDModel(
         input_dim=mcfg["input_dim"],
         hidden_dim=mcfg["hidden_dim"],
         num_heads=mcfg["num_heads"],
-        dropout=0.0,  # No dropout during evaluation
+        dropout=mcfg.get("dropout", 0.3),
         edge_dim=mcfg["edge_feature_dim"],
         num_cross_attn_layers=mcfg.get("num_cross_attn_layers", 1),
         num_gcn_layers=mcfg.get("num_gcn_layers", 4),
@@ -117,12 +118,14 @@ def run_evaluation(config_path: str = "config.yaml", checkpoint_path: str = "che
 
         with torch.no_grad():
             for batch in test_loader:
-                data_a = batch["data_a"].to(device)
-                data_b = batch["data_b"].to(device)   # always a Batch (collate_fn guarantees)
-                labels = batch["labels"]
+                data_a  = batch["data_a"].to(device)
+                data_b  = batch["data_b"].to(device)   # always a Batch (collate_fn guarantees)
+                labels  = batch["labels"]
 
-                logits, _ = model(data_a, data_b)
-                probs = torch.sigmoid(logits).squeeze(-1).cpu().numpy()
+                # model() returns (logits, attn_list) or (logits, sasa_preds, attn_list)
+                out = model(data_a, data_b)
+                logits = out[0]   # first element is always the binding logits
+                probs  = torch.sigmoid(logits).squeeze(-1).cpu().numpy()
                 all_probs.extend(probs.tolist())
                 all_labels.extend(labels.cpu().numpy().tolist())
     else:

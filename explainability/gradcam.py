@@ -51,13 +51,15 @@ class GradCAM:
         self._activations_list = []
         self._gradients_list = []
 
-        # Select target layer
-        gcn = self.model.gcn_encoder
+        # Select target layer from GCNEncoder.
+        # GCNEncoder exposes conv1..conv4 as property aliases on self.convs[0..3].
+        # The default target is conv4 (final GCN layer — richest representations).
+        gcn   = self.model.gcn_encoder
         layer = getattr(gcn, target_layer, None)
         if layer is None:
             raise ValueError(
                 f"Layer '{target_layer}' not found in GCNEncoder. "
-                f"Available: conv1, conv2, conv3, conv4"
+                f"Available aliases: conv1, conv2, conv3, conv4 (requires num_gcn_layers >= 4)."
             )
 
         # Register hooks

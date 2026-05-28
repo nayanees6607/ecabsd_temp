@@ -5,15 +5,14 @@ Key design: BIDIRECTIONAL CrossFusion.
 Chain A queries chain B AND chain B simultaneously queries chain A.
 Both chains enrich each other before classification, exactly as in CrossPPI.
 
-Architecture per layer:
-  CrossFusion:
-    - receptor queries ligand → context_receptor
-    - ligand queries receptor → context_ligand
-  SelfOutput  : dense + dropout + LayerNorm + residual (for both chains)
-  Intermediate: dense + ReLU (for both chains)
-  Output      : dense + dropout + LayerNorm + residual (for both chains)
+Architecture per CrossEncoder layer:
+  CrossFusion   : receptor queries ligand → context_receptor
+                  ligand queries receptor → context_ligand
+  SelfOutput    : dense + dropout + LayerNorm + residual (separate norms per chain)
+  Intermediate  : dense + GELU (for both chains)
+  CrossPPIOutput: dense + dropout + LayerNorm + residual (separate norms per chain)
 
-Multiple Encoder layers are stacked (default 4, same as CrossPPI).
+Multiple CrossEncoder layers are stacked (controlled by num_layers, default 4).
 """
 
 import math
@@ -24,6 +23,8 @@ import torch.nn.functional as F
 
 
 class LayerNorm(nn.Module):
+    """Custom LayerNorm with learned gamma/beta parameters."""
+
     def __init__(self, hidden_size, eps=1e-12):
         super().__init__()
         self.gamma = nn.Parameter(torch.ones(hidden_size))
@@ -52,7 +53,7 @@ class CrossFusion(nn.Module):
         self.head_size     = hidden_size // num_heads
         self.all_head_size = hidden_size
 
-        # Separate Q/K/V projections for each chain
+        # Separate Q/K/V projections for each chain to avoid weight sharing
         self.q_a = nn.Linear(hidden_size, hidden_size)
         self.k_a = nn.Linear(hidden_size, hidden_size)
         self.v_a = nn.Linear(hidden_size, hidden_size)
@@ -79,22 +80,22 @@ class CrossFusion(nn.Module):
         """
         h_a : (1, N_a, D) — chain A (receptor)
         h_b : (1, N_b, D) — chain B (ligand)
-        Returns enriched (h_a, h_b) and (attn_a, attn_b) weight tensors.
+        Returns enriched (ctx_a, ctx_b) and (attn_a, attn_b) weight tensors.
         """
         scale = math.sqrt(self.head_size)
 
         # Chain A queries Chain B
-        q_a = self._split_heads(self.q_a(h_a))
-        k_b = self._split_heads(self.k_b(h_b))
-        v_b = self._split_heads(self.v_b(h_b))
+        q_a    = self._split_heads(self.q_a(h_a))
+        k_b    = self._split_heads(self.k_b(h_b))
+        v_b    = self._split_heads(self.v_b(h_b))
         attn_a = torch.softmax(torch.matmul(q_a, k_b.transpose(-1, -2)) / scale, dim=-1)
         attn_a = self.dropout(attn_a)
         ctx_a  = self._merge_heads(torch.matmul(attn_a, v_b))   # (1, N_a, D)
 
         # Chain B queries Chain A
-        q_b = self._split_heads(self.q_b(h_b))
-        k_a = self._split_heads(self.k_a(h_a))
-        v_a = self._split_heads(self.v_a(h_a))
+        q_b    = self._split_heads(self.q_b(h_b))
+        k_a    = self._split_heads(self.k_a(h_a))
+        v_a    = self._split_heads(self.v_a(h_a))
         attn_b = torch.softmax(torch.matmul(q_b, k_a.transpose(-1, -2)) / scale, dim=-1)
         attn_b = self.dropout(attn_b)
         ctx_b  = self._merge_heads(torch.matmul(attn_b, v_a))   # (1, N_b, D)
@@ -103,23 +104,32 @@ class CrossFusion(nn.Module):
 
 
 class SelfOutput(nn.Module):
-    """Dense projection + dropout + LayerNorm + residual (both chains)."""
+    """
+    Dense projection + dropout + LayerNorm + residual (both chains).
+    Uses SEPARATE LayerNorm instances for chain A and chain B to allow
+    independent learned scale/shift parameters per chain.
+    """
 
     def __init__(self, hidden_size, dropout):
         super().__init__()
-        self.dense_a  = nn.Linear(hidden_size, hidden_size)
-        self.dense_b  = nn.Linear(hidden_size, hidden_size)
-        self.norm     = LayerNorm(hidden_size)
-        self.dropout  = nn.Dropout(dropout)
+        self.dense_a = nn.Linear(hidden_size, hidden_size)
+        self.dense_b = nn.Linear(hidden_size, hidden_size)
+        # Separate norms — chain A and B have different distribution characteristics
+        self.norm_a  = LayerNorm(hidden_size)
+        self.norm_b  = LayerNorm(hidden_size)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, ctx, residual):
-        ctx_a = self.norm(self.dropout(self.dense_a(ctx[0])) + residual[0])
-        ctx_b = self.norm(self.dropout(self.dense_b(ctx[1])) + residual[1])
+        ctx_a = self.norm_a(self.dropout(self.dense_a(ctx[0])) + residual[0])
+        ctx_b = self.norm_b(self.dropout(self.dense_b(ctx[1])) + residual[1])
         return ctx_a, ctx_b
 
 
 class Intermediate(nn.Module):
-    """Position-wise FFN after attention (ReLU, both chains)."""
+    """
+    Position-wise FFN after attention (GELU activation, both chains).
+    Expands to 2× hidden size then projects back (similar to Transformer FFN).
+    """
 
     def __init__(self, hidden_size):
         super().__init__()
@@ -129,24 +139,29 @@ class Intermediate(nn.Module):
         self.proj_b  = nn.Linear(hidden_size * 2, hidden_size)
 
     def forward(self, h_a, h_b):
-        h_a = F.gelu(self.dense_a(h_a))
-        h_b = F.gelu(self.dense_b(h_b))
-        return self.proj_a(h_a), self.proj_b(h_b)
+        h_a = self.proj_a(F.gelu(self.dense_a(h_a)))
+        h_b = self.proj_b(F.gelu(self.dense_b(h_b)))
+        return h_a, h_b
 
 
 class CrossPPIOutput(nn.Module):
-    """Final projection + dropout + LayerNorm + residual."""
+    """
+    Final projection + dropout + LayerNorm + residual (both chains).
+    Uses SEPARATE LayerNorm instances for chain A and chain B.
+    """
 
     def __init__(self, hidden_size, dropout):
         super().__init__()
         self.dense_a = nn.Linear(hidden_size, hidden_size)
         self.dense_b = nn.Linear(hidden_size, hidden_size)
-        self.norm    = LayerNorm(hidden_size)
+        # Separate norms — chain A and B have different distribution characteristics
+        self.norm_a  = LayerNorm(hidden_size)
+        self.norm_b  = LayerNorm(hidden_size)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, h_a, h_b, residual_a, residual_b):
-        h_a = self.norm(self.dropout(self.dense_a(h_a)) + residual_a)
-        h_b = self.norm(self.dropout(self.dense_b(h_b)) + residual_b)
+        h_a = self.norm_a(self.dropout(self.dense_a(h_a)) + residual_a)
+        h_b = self.norm_b(self.dropout(self.dense_b(h_b)) + residual_b)
         return h_a, h_b
 
 
@@ -158,10 +173,10 @@ class CrossEncoder(nn.Module):
 
     def __init__(self, hidden_size, num_heads, attn_dropout, hidden_dropout):
         super().__init__()
-        self.fusion  = CrossFusion(hidden_size, num_heads, attn_dropout)
-        self.out1    = SelfOutput(hidden_size, hidden_dropout)
-        self.inter   = Intermediate(hidden_size)
-        self.out2    = CrossPPIOutput(hidden_size, hidden_dropout)
+        self.fusion = CrossFusion(hidden_size, num_heads, attn_dropout)
+        self.out1   = SelfOutput(hidden_size, hidden_dropout)
+        self.inter  = Intermediate(hidden_size)
+        self.out2   = CrossPPIOutput(hidden_size, hidden_dropout)
 
     def forward(self, h_a, h_b):
         (ctx_a, ctx_b), attn = self.fusion(h_a, h_b)
@@ -177,13 +192,13 @@ class CrossAttention(nn.Module):
 
     Parameters
     ----------
-    embed_dim       : token embedding dimension (= hidden_dim)
-    num_heads       : number of attention heads
-    dropout         : dropout probability
-    num_layers      : number of stacked CrossEncoder layers (default 4)
+    embed_dim  : token embedding dimension (= hidden_dim from the GCN encoder)
+    num_heads  : number of attention heads
+    dropout    : dropout probability
+    num_layers : number of stacked CrossEncoder layers (default 4, same as CrossPPI)
     """
 
-    def __init__(self, embed_dim=512, num_heads=8, dropout=0.1, num_layers=4):
+    def __init__(self, embed_dim=128, num_heads=8, dropout=0.1, num_layers=4):
         super().__init__()
         layer = CrossEncoder(embed_dim, num_heads, dropout, dropout)
         self.layers = nn.ModuleList([copy.deepcopy(layer) for _ in range(num_layers)])
@@ -194,12 +209,13 @@ class CrossAttention(nn.Module):
         x_b : (1, N_b, D)
 
         Returns:
-          x_a    : (1, N_a, D)   — enriched chain A
-          attn_a : (1, H, N_a, N_b) — chain A's attention over chain B
+          x_a    : (1, N_a, D)      — enriched chain A representations
+          attn_a : (1, H, N_a, N_b) — chain A's attention over chain B from first layer
         """
         first_attn = None
         for i, layer in enumerate(self.layers):
             x_a, x_b, (attn_a, _) = layer(x_a, x_b)
             if i == 0:
+                # Store first-layer attention (cleaner than last-layer for visualisation)
                 first_attn = attn_a
         return x_a, first_attn

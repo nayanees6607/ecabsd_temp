@@ -65,12 +65,12 @@ def run_prediction(
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if model is None:
-        # Load model
+        # Load model — use training dropout; model.eval() will disable it
         model = ECABSDModel(
             input_dim=mcfg["input_dim"],
             hidden_dim=mcfg["hidden_dim"],
             num_heads=mcfg["num_heads"],
-            dropout=0.0,
+            dropout=mcfg.get("dropout", 0.3),
             edge_dim=mcfg["edge_feature_dim"],
         ).to(device)
 

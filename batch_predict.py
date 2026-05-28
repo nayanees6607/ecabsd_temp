@@ -76,7 +76,8 @@ def run_batch_prediction(
         input_dim=mcfg["input_dim"],
         hidden_dim=mcfg["hidden_dim"],
         num_heads=mcfg["num_heads"],
-        dropout=0.0,
+        # Use training dropout; model.eval() inside predict() disables it
+        dropout=mcfg.get("dropout", 0.3),
         edge_dim=mcfg["edge_feature_dim"],
     ).to(device)
 

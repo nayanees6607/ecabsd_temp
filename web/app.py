@@ -53,7 +53,8 @@ def get_model(config_path: str = "config.yaml"):
             input_dim=mcfg["input_dim"],
             hidden_dim=mcfg["hidden_dim"],
             num_heads=mcfg["num_heads"],
-            dropout=0.0,
+            dropout=mcfg.get("dropout", 0.3),
+            edge_dim=mcfg.get("edge_feature_dim", 4),
         ).to(_device)
 
         checkpoint_path = wcfg.get("checkpoint", "checkpoints/best_model.pt")
@@ -78,14 +79,15 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
         version="1.0.0",
     )
 
-    # CORS
+    # CORS — restrict to configured origins; allow only necessary methods
     wcfg = load_config(config_path).get("web", {})
     allow_origins = wcfg.get("allow_origins", ["*"])
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allow_origins,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type", "Authorization"],
+        allow_credentials=True,
     )
 
     # Static files
@@ -119,11 +121,11 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
         if not pdb_file.filename.lower().endswith(".pdb"):
             raise HTTPException(status_code=400, detail="Invalid file type. Only .pdb files are accepted.")
         MAX_SIZE = 50 * 1024 * 1024  # 50MB
-        await pdb_file.seek(0, 2)
-        file_size = await pdb_file.tell()
-        await pdb_file.seek(0)
-        if file_size > MAX_SIZE:
+        content = await pdb_file.read()
+        if len(content) > MAX_SIZE:
             raise HTTPException(status_code=413, detail="File too large. Maximum size is 50MB.")
+        # Seek back so the file can be read again by the endpoint handler
+        await pdb_file.seek(0)
 
     @app.post("/predict")
     async def predict(
