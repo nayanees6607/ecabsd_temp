@@ -81,7 +81,7 @@ def process_single_pdb(pdb_path, output_dir, distance_cutoff):
             # Check if already processed (Resume feature)
             if os.path.exists(save_path):
                 try:
-                    graph = torch.load(save_path, map_location="cpu")
+                    graph = torch.load(save_path, map_location="cpu", weights_only=False)
                     results.append({
                         "pdb_id": pdb_name,
                         "chain_a": chain_id,

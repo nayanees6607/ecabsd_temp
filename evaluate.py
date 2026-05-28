@@ -84,7 +84,7 @@ def run_evaluation(config_path: str = "config.yaml", checkpoint_path: str = "che
     # Load checkpoint and recover saved threshold
     saved_threshold = cfg["prediction"].get("threshold", 0.5)
     if os.path.exists(checkpoint_path):
-        checkpoint = torch.load(checkpoint_path, map_location=device)
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint["model_state_dict"])
         saved_threshold = checkpoint.get("best_threshold", saved_threshold)
         print(f"[ECABSD] Loaded checkpoint from: {checkpoint_path}")

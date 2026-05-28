@@ -52,7 +52,7 @@ def run_benchmark(
     # Load model
     model = ECABSDModel().to(device)
     if os.path.exists(checkpoint_path):
-        ckpt = torch.load(checkpoint_path, map_location=device)
+        ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model_state_dict"])
         print(f"[Benchmark] Loaded checkpoint: {checkpoint_path}")
     else:

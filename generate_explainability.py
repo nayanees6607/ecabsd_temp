@@ -42,7 +42,7 @@ def generate_gradcam(pdb_path, chain_a, chain_b, checkpoint_path, config_path, o
         dropout=0.0,
     ).to(device)
 
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
