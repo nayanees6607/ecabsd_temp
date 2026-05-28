@@ -98,17 +98,38 @@ def prepare_db5(db5_dir, output_dir, distance_cutoff, train_ratio, val_ratio, se
         print(f"[ERROR] No DB5 target files found in: {db5_dir}")
         return
 
+    # Check if ESM is enabled to determine if we should run sequentially
+    use_esm = False
+    if os.path.exists("config.yaml"):
+        try:
+            import yaml
+            with open("config.yaml", "r") as f:
+                cfg = yaml.safe_load(f)
+            use_esm = cfg.get("model", {}).get("use_esm", False)
+        except Exception:
+            pass
+
+    if use_esm:
+        print("[ECABSD] ESM-2 enabled. Forcing sequential execution (threads=1) in the main process to prevent CUDA multiprocessing issues.")
+        threads = 1
+
     print(f"[ECABSD] Processing {len(pdb_files)} DB5 structures using {threads} processes...")
 
     successful = []
     all_errors = []
 
-    with ProcessPoolExecutor(max_workers=threads) as executor:
-        futures = {executor.submit(process_single_pdb, f, output_dir, distance_cutoff): f for f in pdb_files}
-        for future in tqdm(as_completed(futures), total=len(pdb_files), desc="Processing DB5"):
-            results, errors = future.result()
+    if threads <= 1:
+        for f in tqdm(pdb_files, desc="Processing DB5"):
+            results, errors = process_single_pdb(f, output_dir, distance_cutoff)
             successful.extend(results)
             all_errors.extend(errors)
+    else:
+        with ProcessPoolExecutor(max_workers=threads) as executor:
+            futures = {executor.submit(process_single_pdb, f, output_dir, distance_cutoff): f for f in pdb_files}
+            for future in tqdm(as_completed(futures), total=len(pdb_files), desc="Processing DB5"):
+                results, errors = future.result()
+                successful.extend(results)
+                all_errors.extend(errors)
 
     # Group by PDB ID so A and B of the same complex stay in the same split
     complexes = list(set([s["pdb_id"] for s in successful]))

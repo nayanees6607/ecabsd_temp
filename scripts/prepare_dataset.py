@@ -125,17 +125,38 @@ def prepare_dataset(pdb_dir, output_dir, distance_cutoff, train_ratio, val_ratio
         print(f"[ERROR] No PDB files found in: {pdb_dir}")
         return
 
+    # Check if ESM is enabled to determine if we should run sequentially
+    use_esm = False
+    if os.path.exists("config.yaml"):
+        try:
+            import yaml
+            with open("config.yaml", "r") as f:
+                cfg = yaml.safe_load(f)
+            use_esm = cfg.get("model", {}).get("use_esm", False)
+        except Exception:
+            pass
+
+    if use_esm:
+        print("[ECABSD] ESM-2 enabled. Forcing sequential execution (threads=1) in the main process to prevent CUDA multiprocessing issues.")
+        threads = 1
+
     print(f"[ECABSD] Processing {len(pdb_files)} PDB files using {threads} processes...")
 
     successful = []
     all_errors = []
 
-    with ProcessPoolExecutor(max_workers=threads) as executor:
-        futures = {executor.submit(process_single_pdb, f, output_dir, distance_cutoff): f for f in pdb_files}
-        for future in tqdm(as_completed(futures), total=len(pdb_files), desc="Processing PDBs"):
-            results, errors = future.result()
+    if threads <= 1:
+        for f in tqdm(pdb_files, desc="Processing PDBs"):
+            results, errors = process_single_pdb(f, output_dir, distance_cutoff)
             successful.extend(results)
             all_errors.extend(errors)
+    else:
+        with ProcessPoolExecutor(max_workers=threads) as executor:
+            futures = {executor.submit(process_single_pdb, f, output_dir, distance_cutoff): f for f in pdb_files}
+            for future in tqdm(as_completed(futures), total=len(pdb_files), desc="Processing PDBs"):
+                results, errors = future.result()
+                successful.extend(results)
+                all_errors.extend(errors)
 
     # Create train/val/test splits
     random.shuffle(successful)
