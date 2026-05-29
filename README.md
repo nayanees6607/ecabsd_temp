@@ -205,14 +205,14 @@ Current verified evaluation after exact PDB-ID de-leakage:
 
 | Metric | Score |
 |---|---:|
-| Accuracy | `0.8318` |
-| Precision | `0.1403` |
-| Recall | `0.0132` |
-| F1 Score | `0.0241` |
-| MCC | `-0.0058` |
-| ROC-AUC | `0.4736` |
-| PR-AUC | `0.1545` |
-| Threshold | `0.5000` |
+| Accuracy | `0.8504` |
+| Precision | `0.5233` |
+| Recall | `0.5659` |
+| F1 Score | `0.5438` |
+| MCC | `0.4550` |
+| ROC-AUC | `0.8343` |
+| PR-AUC | `0.5586` |
+| Threshold | `0.6729` |
 
 Before using benchmark numbers in a publication, run the leakage checks:
 
